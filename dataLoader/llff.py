@@ -7,6 +7,8 @@ import sqlite3
 import sys
 from PIL import Image
 from torchvision import transforms as T
+import shutil
+import platform
 
 from .ray_utils import *
 
@@ -208,6 +210,8 @@ class LLFFDataset(Dataset):
         self.dataset_name = datadir.split("/")[-2]
 
         self.blender2opencv = np.eye(4)
+        # Allow disabling dense depth to save RAM
+        self.use_dense_depth = os.getenv('FRUGALNERF_DENSE_DEPTH', '1') == '1'
         self.read_meta()
         self.white_bg = False
 
@@ -291,7 +295,8 @@ class LLFFDataset(Dataset):
         if self.frame_num is not None and len(self.frame_num) > 0 and self.split != 'test':
             N_views, N_rots = 120, 1
             if self.split == 'novel':
-                self.render_path = get_spiral(self.poses[self.frame_num], self.near_fars, N_views=1000, random_poses=True)
+                novel_views_cap = int(os.getenv('FRUGALNERF_NOVEL_VIEWS', '60'))
+                self.render_path = get_spiral(self.poses[self.frame_num], self.near_fars, N_views=novel_views_cap, random_poses=True)
             else:
                 self.render_path = get_spiral(self.poses[self.frame_num], self.near_fars, N_views=N_views, N_rots=N_rots)
             if self.split == 'novel':
@@ -299,7 +304,8 @@ class LLFFDataset(Dataset):
         else:
             N_views, N_rots = 120, 2
             if self.split == 'novel':
-                self.render_path = get_spiral(self.poses, self.near_fars, N_views=1000, random_poses=True)
+                novel_views_cap = int(os.getenv('FRUGALNERF_NOVEL_VIEWS', '60'))
+                self.render_path = get_spiral(self.poses, self.near_fars, N_views=novel_views_cap, random_poses=True)
             else:
                 self.render_path = get_spiral(self.poses, self.near_fars, N_views=N_views, N_rots=N_rots)
 
@@ -339,13 +345,18 @@ class LLFFDataset(Dataset):
             # Generate sparse depth if not exists
             depth_dir = self.root_dir + "/" + str(n_train) + "_views"
             if not os.path.exists(os.path.join(depth_dir, 'colmap_depth.npy')):
-                print(f"Generating sparse depth for {n_train} training views...")
-                work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
-                if work_dir is None:
-                    print("Failed to generate sparse depth. Using empty depth data.")
+                # Skip COLMAP on Windows or when colmap is not installed
+                if platform.system().lower().startswith('win') or shutil.which('colmap') is None:
+                    print("COLMAP not available on this system. Skipping sparse depth generation.")
                     self.depth_gts = []
                 else:
-                    self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+                    print(f"Generating sparse depth for {n_train} training views...")
+                    work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
+                    if work_dir is None:
+                        print("Failed to generate sparse depth. Using empty depth data.")
+                        self.depth_gts = []
+                    else:
+                        self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
             else:
                 print(f"Loading existing sparse depth from {depth_dir}")
                 self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
@@ -353,7 +364,7 @@ class LLFFDataset(Dataset):
         if self.split != 'novel':
             self.frameid2_startpoints_in_allray = [-10] * self.poses.shape[0] # -10 represent
             cnt = 0
-            depth_estimator = DepthEstimator()
+            depth_estimator = DepthEstimator() if self.use_dense_depth else None
             for index, i in enumerate(img_list):
                 image_path = self.image_paths[i]
                 c2w = torch.FloatTensor(self.poses[i])
@@ -365,9 +376,13 @@ class LLFFDataset(Dataset):
                 img = self.transform(img)  # (3, h, w)
                 
                 depth = -torch.ones(H, W)
-                dense_depth = depth_estimator.estimate_depth(img.cuda()).cpu()
+                # Ensure CPU-safe and optional dense depth estimation
+                if depth_estimator is not None:
+                    dense_depth = depth_estimator.estimate_depth(img.to(depth_estimator.device)).cpu()
+                else:
+                    dense_depth = torch.zeros(H, W)
                 weight = -torch.ones(H, W)
-                if self.split == 'train':
+                if self.split == 'train' and isinstance(getattr(self, 'depth_gts', []), list) and len(self.depth_gts) > index:
                     for j in range(len(self.depth_gts[index]['coord'])):
                         # avoid out of bound
                         x = round(self.depth_gts[index]['coord'][j,1]) 
