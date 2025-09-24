@@ -7,6 +7,7 @@ import sqlite3
 import sys
 from PIL import Image
 from torchvision import transforms as T
+import shutil
 
 from .ray_utils import *
 
@@ -144,9 +145,14 @@ def get_poses(images):
 
 def load_colmap_depth(datadir, factor=8, bd_factor=.75):
     data_file = datadir + '/colmap_depth.npy'
-    
-    images = read_images_binary(datadir + '/dense/sparse/images.bin')
-    points = read_points3d_binary(datadir + '/dense/sparse/points3D.bin')
+    images_bin_path = datadir + '/dense/sparse/images.bin'
+    points3d_bin_path = datadir + '/dense/sparse/points3D.bin'
+    if not os.path.exists(images_bin_path) or not os.path.exists(points3d_bin_path):
+        print(f"COLMAP depth files not found under {datadir}/dense/sparse. Skipping sparse depth.")
+        return []
+
+    images = read_images_binary(images_bin_path)
+    points = read_points3d_binary(points3d_bin_path)
     Errs = np.array([point3D.error for point3D in points.values()])
     Err_mean = np.mean(Errs)
     print("Mean Projection Error:", Err_mean)
@@ -336,19 +342,21 @@ class LLFFDataset(Dataset):
             train_indices = img_list if self.frame_num is not None and len(self.frame_num) > 0 else img_list
             n_train = len(train_indices)
             
-            # Generate sparse depth if not exists
-            depth_dir = self.root_dir + "/" + str(n_train) + "_views"
-            if not os.path.exists(os.path.join(depth_dir, 'colmap_depth.npy')):
-                print(f"Generating sparse depth for {n_train} training views...")
-                work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
-                if work_dir is None:
-                    print("Failed to generate sparse depth. Using empty depth data.")
-                    self.depth_gts = []
-                else:
-                    self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
-            else:
-                print(f"Loading existing sparse depth from {depth_dir}")
-                self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+        # Generate sparse depth if not exists
+        depth_dir = self.root_dir + "/" + str(n_train) + "_views"
+        if not os.path.exists(os.path.join(depth_dir, 'colmap_depth.npy')):
+            # Ensure COLMAP CLI exists
+            colmap_bin = os.environ.get('COLMAP_BIN', 'colmap')
+            if shutil.which(colmap_bin) is None:
+                raise RuntimeError("COLMAP CLI not found. Please install it (e.g., apt-get install -y colmap) or set COLMAP_BIN to its path.")
+            print(f"Generating sparse depth for {n_train} training views using COLMAP CLI...")
+            work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
+            if work_dir is None:
+                raise RuntimeError("COLMAP failed to generate sparse depth. Check COLMAP installation and logs above.")
+            self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+        else:
+            print(f"Loading existing sparse depth from {depth_dir}")
+            self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
         
         if self.split != 'novel':
             self.frameid2_startpoints_in_allray = [-10] * self.poses.shape[0] # -10 represent
@@ -367,7 +375,7 @@ class LLFFDataset(Dataset):
                 depth = -torch.ones(H, W)
                 dense_depth = depth_estimator.estimate_depth(img.cuda()).cpu()
                 weight = -torch.ones(H, W)
-                if self.split == 'train':
+                if self.split == 'train' and index < len(self.depth_gts):
                     for j in range(len(self.depth_gts[index]['coord'])):
                         # avoid out of bound
                         x = round(self.depth_gts[index]['coord'][j,1]) 
