@@ -342,21 +342,24 @@ class LLFFDataset(Dataset):
             train_indices = img_list if self.frame_num is not None and len(self.frame_num) > 0 else img_list
             n_train = len(train_indices)
             
-        # Generate sparse depth if not exists
-        depth_dir = self.root_dir + "/" + str(n_train) + "_views"
-        if not os.path.exists(os.path.join(depth_dir, 'colmap_depth.npy')):
-            # Ensure COLMAP CLI exists
-            colmap_bin = os.environ.get('COLMAP_BIN', 'colmap')
-            if shutil.which(colmap_bin) is None:
-                raise RuntimeError("COLMAP CLI not found. Please install it (e.g., apt-get install -y colmap) or set COLMAP_BIN to its path.")
-            print(f"Generating sparse depth for {n_train} training views using COLMAP CLI...")
-            work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
-            if work_dir is None:
-                raise RuntimeError("COLMAP failed to generate sparse depth. Check COLMAP installation and logs above.")
-            self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+            # Generate sparse depth if not exists
+            depth_dir = self.root_dir + "/" + str(n_train) + "_views"
+            if not os.path.exists(os.path.join(depth_dir, 'colmap_depth.npy')):
+                # Ensure COLMAP CLI exists
+                colmap_bin = os.environ.get('COLMAP_BIN', 'colmap')
+                if shutil.which(colmap_bin) is None:
+                    raise RuntimeError("COLMAP CLI not found. Please install it (e.g., apt-get install -y colmap) or set COLMAP_BIN to its path.")
+                print(f"Generating sparse depth for {n_train} training views using COLMAP CLI...")
+                work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
+                if work_dir is None:
+                    raise RuntimeError("COLMAP failed to generate sparse depth. Check COLMAP installation and logs above.")
+                self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+            else:
+                print(f"Loading existing sparse depth from {depth_dir}")
+                self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
         else:
-            print(f"Loading existing sparse depth from {depth_dir}")
-            self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+            # No sparse depth needed for test/novel splits
+            self.depth_gts = []
         
         if self.split != 'novel':
             self.frameid2_startpoints_in_allray = [-10] * self.poses.shape[0] # -10 represent
@@ -673,14 +676,15 @@ def generate_sparse_depth(datadir, frame_indices, downsample=4):
     try:
         # Feature extraction
         print("Running COLMAP feature extraction...")
-        os.system('colmap feature_extractor --database_path database.db --image_path images '
+        os.system('QT_QPA_PLATFORM=offscreen colmap feature_extractor --database_path database.db --image_path images '
                  '--SiftExtraction.max_image_size 4032 --SiftExtraction.max_num_features 32768 '
-                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1')
+                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1 '
+                 '--SiftExtraction.use_gpu 0')
         
         # Feature matching
         print("Running COLMAP feature matching...")
-        os.system('colmap exhaustive_matcher --database_path database.db '
-                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768')
+        os.system('QT_QPA_PLATFORM=offscreen colmap exhaustive_matcher --database_path database.db '
+                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768 --SiftMatching.use_gpu 0')
         
         # Get image order from database
         try:
@@ -702,16 +706,16 @@ def generate_sparse_depth(datadir, frame_indices, downsample=4):
         
         # Point triangulation
         print("Running COLMAP point triangulation...")
-        os.system('colmap point_triangulator --database_path database.db --image_path images '
+        os.system('QT_QPA_PLATFORM=offscreen colmap point_triangulator --database_path database.db --image_path images '
                  '--input_path created --output_path triangulated '
                  '--Mapper.tri_ignore_two_view_tracks 0 --Mapper.num_threads 16 --Mapper.init_min_tri_angle 4 --Mapper.multiple_models 0 --Mapper.extract_colors 0')
         
         # Convert to TXT format
-        os.system('colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
+        os.system('QT_QPA_PLATFORM=offscreen colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
         
         # Image undistortion
         print("Running COLMAP image undistortion...")
-        os.system('colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
+        os.system('QT_QPA_PLATFORM=offscreen colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
         
         print(f"Sparse depth generation completed for {n_views} views")
         
