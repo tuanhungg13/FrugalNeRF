@@ -8,7 +8,6 @@ import sys
 from PIL import Image
 from torchvision import transforms as T
 import shutil
-import platform
 
 from .ray_utils import *
 
@@ -146,9 +145,14 @@ def get_poses(images):
 
 def load_colmap_depth(datadir, factor=8, bd_factor=.75):
     data_file = datadir + '/colmap_depth.npy'
-    
-    images = read_images_binary(datadir + '/dense/sparse/images.bin')
-    points = read_points3d_binary(datadir + '/dense/sparse/points3D.bin')
+    images_bin_path = datadir + '/dense/sparse/images.bin'
+    points3d_bin_path = datadir + '/dense/sparse/points3D.bin'
+    if not os.path.exists(images_bin_path) or not os.path.exists(points3d_bin_path):
+        print(f"COLMAP depth files not found under {datadir}/dense/sparse. Skipping sparse depth.")
+        return []
+
+    images = read_images_binary(images_bin_path)
+    points = read_points3d_binary(points3d_bin_path)
     Errs = np.array([point3D.error for point3D in points.values()])
     Err_mean = np.mean(Errs)
     print("Mean Projection Error:", Err_mean)
@@ -210,8 +214,6 @@ class LLFFDataset(Dataset):
         self.dataset_name = datadir.split("/")[-2]
 
         self.blender2opencv = np.eye(4)
-        # Allow disabling dense depth to save RAM
-        self.use_dense_depth = os.getenv('FRUGALNERF_DENSE_DEPTH', '1') == '1'
         self.read_meta()
         self.white_bg = False
 
@@ -295,8 +297,7 @@ class LLFFDataset(Dataset):
         if self.frame_num is not None and len(self.frame_num) > 0 and self.split != 'test':
             N_views, N_rots = 120, 1
             if self.split == 'novel':
-                novel_views_cap = int(os.getenv('FRUGALNERF_NOVEL_VIEWS', '60'))
-                self.render_path = get_spiral(self.poses[self.frame_num], self.near_fars, N_views=novel_views_cap, random_poses=True)
+                self.render_path = get_spiral(self.poses[self.frame_num], self.near_fars, N_views=1000, random_poses=True)
             else:
                 self.render_path = get_spiral(self.poses[self.frame_num], self.near_fars, N_views=N_views, N_rots=N_rots)
             if self.split == 'novel':
@@ -304,8 +305,7 @@ class LLFFDataset(Dataset):
         else:
             N_views, N_rots = 120, 2
             if self.split == 'novel':
-                novel_views_cap = int(os.getenv('FRUGALNERF_NOVEL_VIEWS', '60'))
-                self.render_path = get_spiral(self.poses, self.near_fars, N_views=novel_views_cap, random_poses=True)
+                self.render_path = get_spiral(self.poses, self.near_fars, N_views=1000, random_poses=True)
             else:
                 self.render_path = get_spiral(self.poses, self.near_fars, N_views=N_views, N_rots=N_rots)
 
@@ -345,26 +345,26 @@ class LLFFDataset(Dataset):
             # Generate sparse depth if not exists
             depth_dir = self.root_dir + "/" + str(n_train) + "_views"
             if not os.path.exists(os.path.join(depth_dir, 'colmap_depth.npy')):
-                # Skip COLMAP on Windows or when colmap is not installed
-                if platform.system().lower().startswith('win') or shutil.which('colmap') is None:
-                    print("COLMAP not available on this system. Skipping sparse depth generation.")
-                    self.depth_gts = []
-                else:
-                    print(f"Generating sparse depth for {n_train} training views...")
-                    work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
-                    if work_dir is None:
-                        print("Failed to generate sparse depth. Using empty depth data.")
-                        self.depth_gts = []
-                    else:
-                        self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+                # Ensure COLMAP CLI exists
+                colmap_bin = os.environ.get('COLMAP_BIN', 'colmap')
+                if shutil.which(colmap_bin) is None:
+                    raise RuntimeError("COLMAP CLI not found. Please install it (e.g., apt-get install -y colmap) or set COLMAP_BIN to its path.")
+                print(f"Generating sparse depth for {n_train} training views using COLMAP CLI...")
+                work_dir = generate_sparse_depth(self.root_dir, train_indices, self.downsample)
+                if work_dir is None:
+                    raise RuntimeError("COLMAP failed to generate sparse depth. Check COLMAP installation and logs above.")
+                self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
             else:
                 print(f"Loading existing sparse depth from {depth_dir}")
                 self.depth_gts = load_colmap_depth(depth_dir, factor=self.downsample)
+        else:
+            # No sparse depth needed for test/novel splits
+            self.depth_gts = []
         
         if self.split != 'novel':
             self.frameid2_startpoints_in_allray = [-10] * self.poses.shape[0] # -10 represent
             cnt = 0
-            depth_estimator = DepthEstimator() if self.use_dense_depth else None
+            depth_estimator = DepthEstimator()
             for index, i in enumerate(img_list):
                 image_path = self.image_paths[i]
                 c2w = torch.FloatTensor(self.poses[i])
@@ -376,13 +376,9 @@ class LLFFDataset(Dataset):
                 img = self.transform(img)  # (3, h, w)
                 
                 depth = -torch.ones(H, W)
-                # Ensure CPU-safe and optional dense depth estimation
-                if depth_estimator is not None:
-                    dense_depth = depth_estimator.estimate_depth(img.to(depth_estimator.device)).cpu()
-                else:
-                    dense_depth = torch.zeros(H, W)
+                dense_depth = depth_estimator.estimate_depth(img.cuda()).cpu()
                 weight = -torch.ones(H, W)
-                if self.split == 'train' and isinstance(getattr(self, 'depth_gts', []), list) and len(self.depth_gts) > index:
+                if self.split == 'train' and index < len(self.depth_gts):
                     for j in range(len(self.depth_gts[index]['coord'])):
                         # avoid out of bound
                         x = round(self.depth_gts[index]['coord'][j,1]) 
@@ -680,14 +676,15 @@ def generate_sparse_depth(datadir, frame_indices, downsample=4):
     try:
         # Feature extraction
         print("Running COLMAP feature extraction...")
-        os.system('colmap feature_extractor --database_path database.db --image_path images '
+        os.system('QT_QPA_PLATFORM=offscreen colmap feature_extractor --database_path database.db --image_path images '
                  '--SiftExtraction.max_image_size 4032 --SiftExtraction.max_num_features 32768 '
-                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1')
+                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1 '
+                 '--SiftExtraction.use_gpu 0')
         
         # Feature matching
         print("Running COLMAP feature matching...")
-        os.system('colmap exhaustive_matcher --database_path database.db '
-                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768')
+        os.system('QT_QPA_PLATFORM=offscreen colmap exhaustive_matcher --database_path database.db '
+                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768 --SiftMatching.use_gpu 0')
         
         # Get image order from database
         try:
@@ -709,16 +706,16 @@ def generate_sparse_depth(datadir, frame_indices, downsample=4):
         
         # Point triangulation
         print("Running COLMAP point triangulation...")
-        os.system('colmap point_triangulator --database_path database.db --image_path images '
+        os.system('QT_QPA_PLATFORM=offscreen colmap point_triangulator --database_path database.db --image_path images '
                  '--input_path created --output_path triangulated '
                  '--Mapper.tri_ignore_two_view_tracks 0 --Mapper.num_threads 16 --Mapper.init_min_tri_angle 4 --Mapper.multiple_models 0 --Mapper.extract_colors 0')
         
         # Convert to TXT format
-        os.system('colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
+        os.system('QT_QPA_PLATFORM=offscreen colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
         
         # Image undistortion
         print("Running COLMAP image undistortion...")
-        os.system('colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
+        os.system('QT_QPA_PLATFORM=offscreen colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
         
         print(f"Sparse depth generation completed for {n_views} views")
         
