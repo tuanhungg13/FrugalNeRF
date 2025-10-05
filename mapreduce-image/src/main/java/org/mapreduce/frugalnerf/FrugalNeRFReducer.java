@@ -170,16 +170,30 @@ public class FrugalNeRFReducer extends Reducer<Text, BytesWritable, Text, BytesW
      */
     private float[][][] extractPoses(List<ProcessedImageData> images) {
         // Standardize to 3x5 pose blocks expected by serialization (3 rows x 5 cols)
-        // Construct from a 4x4 camera matrix: take first 3x4 and append a zero column
+        // Construct from a 4x4 camera matrix: take first 3x4 and set last column to [H, W, focal]
         float[][][] poses3x5 = new float[images.size()][3][5];
         for (int i = 0; i < images.size(); i++) {
-            float[][] pose4x4 = extractPoseFromImage(images.get(i));
+            ProcessedImageData img = images.get(i);
+            float[][] pose4x4 = extractPoseFromImage(img);
             for (int r = 0; r < 3; r++) {
                 for (int c = 0; c < 4; c++) {
                     poses3x5[i][r][c] = pose4x4[r][c];
                 }
-                poses3x5[i][r][4] = 0.0f; // placeholder for the 5th column
             }
+            int width = img.width;
+            int height = img.height;
+            if (width <= 0 || height <= 0) {
+                width = 256;
+                height = 256;
+            }
+            float[][] intr = extractIntrinsicsFromImage(img);
+            float focal = (intr != null) ? intr[0][0] : 0.0f;
+            if (!Float.isFinite(focal) || focal <= 0.0f) {
+                focal = 0.5f * (float) Math.min(width, height);
+            }
+            poses3x5[i][0][4] = height; // H
+            poses3x5[i][1][4] = width;  // W
+            poses3x5[i][2][4] = focal;  // focal
         }
         return poses3x5;
     }

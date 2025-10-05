@@ -216,11 +216,8 @@ public class FrugalNeRFConverter {
             // 2. Copy images
             copyImages(scene, sceneDir + "/images");
             
-            // 3. Create metadata files
-            createMetadataFiles(scene, sceneDir);
-            
-            // 4. Create train/test split
-            createTrainTestSplit(scene, sceneDir);
+            // NOTE: For FrugalNeRF training, only poses_bounds.npy and images/ are required.
+            // Skipping metadata and split generation to keep output minimal.
             
         } catch (Exception e) {
             System.err.println("Error converting scene " + scene.sceneId + ": " + e.getMessage());
