@@ -7,8 +7,8 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.output.SequenceFileOutputFormat;
 
-import org.mapreduce.mapreduce.ImageMapper;
-import org.mapreduce.mapreduce.ImageReducer;
+import org.mapreduce.frugalnerf.FrugalNeRFMapper;
+import org.mapreduce.frugalnerf.FrugalNeRFReducer;
 import org.mapreduce.utils.ImageInputFormat;
 
 //TIP To <b>Run</b> code, press <shortcut actionId="Run"/> or
@@ -27,8 +27,8 @@ public class Main {
 
         // Input format (custom), mapper, reducer
         job.setInputFormatClass(ImageInputFormat.class);
-        job.setMapperClass(ImageMapper.class);
-        job.setReducerClass(ImageReducer.class);
+        job.setMapperClass(FrugalNeRFMapper.class);
+        job.setReducerClass(FrugalNeRFReducer.class);
 
         // Map output
         job.setMapOutputKeyClass(Text.class);

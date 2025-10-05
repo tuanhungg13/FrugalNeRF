@@ -258,7 +258,14 @@ class LLFFDataset(Dataset):
 
     def read_meta(self):
         poses_bounds = np.load(os.path.join(self.root_dir, 'poses_bounds.npy'))  # (N_images, 17)
-        self.image_paths = sorted(glob.glob(os.path.join(self.root_dir, 'images_4/*')))
+        # Accept common image extensions under images/; fallback to images_4/* if needed
+        exts = ['*.png', '*.jpg', '*.jpeg', '*.PNG', '*.JPG', '*.JPEG']
+        paths = []
+        for ext in exts:
+            paths += glob.glob(os.path.join(self.root_dir, 'images', ext))
+        if not paths:
+            paths = glob.glob(os.path.join(self.root_dir, 'images_4/*'))
+        self.image_paths = sorted(paths)
         
         # load full resolution image then resize
         if self.split in ['train', 'test', 'novel']:

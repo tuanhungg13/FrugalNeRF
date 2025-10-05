@@ -21,6 +21,7 @@ public class ImageRecordReader extends RecordReader<Text, BytesWritable> {
     @Override
     public void initialize(InputSplit split, TaskAttemptContext context) throws IOException {
         this.fileSplit = (FileSplit) split;
+        System.out.println("[ImageRecordReader:init] split path=" + fileSplit.getPath());
     }
 
     @Override
@@ -35,6 +36,7 @@ public class ImageRecordReader extends RecordReader<Text, BytesWritable> {
         try {
             in = fs.open(path);
             long len = fs.getFileStatus(path).getLen();
+            System.out.println("[ImageRecordReader:read] key=" + path.getName() + ", size=" + len + " bytes");
             ByteArrayOutputStream baos = new ByteArrayOutputStream();
             byte[] buf = new byte[4096];
             int read;
@@ -42,9 +44,10 @@ public class ImageRecordReader extends RecordReader<Text, BytesWritable> {
                 baos.write(buf, 0, read);
             }
             byte[] bytes = baos.toByteArray();
-            currentKey.set(path.getName());
+            currentKey.set(path.toString());
             currentValue.set(bytes, 0, bytes.length);
             processed = true;
+            System.out.println("[ImageRecordReader:emit] key=" + currentKey.toString() + ", valueBytes=" + bytes.length);
             return true;
         } finally {
             if (in != null) in.close();
