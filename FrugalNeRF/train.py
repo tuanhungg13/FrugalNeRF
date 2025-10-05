@@ -2,12 +2,18 @@ import os
 from tqdm.auto import tqdm
 from opt import config_parser
 from models.tensoRF import TensorVMSplit
+import time
+import csv
 
 
 import json, random
 from renderer import *
 from utils import *
 from torch.utils.tensorboard import SummaryWriter
+try:
+    import matplotlib.pyplot as plt
+except Exception:
+    plt = None
 import datetime
 
 from dataLoader import dataset_dict
@@ -151,6 +157,17 @@ def reconstruction(args):
     os.makedirs(f'{logfolder}/rgba', exist_ok=True)
     summary_writer = SummaryWriter(logfolder)
 
+    # metrics csv for analysis/reporting
+    metrics_csv_path = os.path.join(logfolder, 'metrics.csv')
+    csv_exists = os.path.exists(metrics_csv_path)
+    metrics_csv_file = open(metrics_csv_path, 'a', newline='')
+    metrics_writer = csv.writer(metrics_csv_file)
+    if not csv_exists:
+        metrics_writer.writerow([
+            'iter','total_loss','loss_hr','loss_mr','loss_lr','depth_loss','psnr','ssim','lpips',
+            'throughput_rays_per_s','gpu_mem_mb','iter_time_s','lr','img_W','img_H','focal'
+        ])
+
 
 
     # init parameters
@@ -265,7 +282,15 @@ def reconstruction(args):
 
 
     pbar = tqdm(range(args.n_iters), miniters=args.progress_refresh_rate, file=sys.stdout)
+    last_ssim = float('nan')
+    last_lpips = float('nan')
     for iteration in pbar:
+        iter_start = time.perf_counter()
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
 
         ray_idx = trainingSampler.nextids()
 
@@ -466,6 +491,60 @@ def reconstruction(args):
         summary_writer.add_scalar('train/mse', loss, global_step=iteration)
 
 
+        # throughput & GPU memory metrics
+        iter_time = max(1e-6, time.perf_counter() - iter_start)
+        rays_this_iter = int(rays_train_all.shape[0])
+        throughput = float(rays_this_iter) / iter_time
+        gpu_mem_mb = 0.0
+        if torch.cuda.is_available():
+            try:
+                gpu_mem_mb = torch.cuda.max_memory_allocated() / (1024.0*1024.0)
+            except Exception:
+                pass
+
+        # log extra metrics
+        summary_writer.add_scalar('train/throughput_rays_per_s', throughput, global_step=iteration)
+        summary_writer.add_scalar('train/gpu_mem_mb', gpu_mem_mb, global_step=iteration)
+        summary_writer.add_scalar('train/loss_hr', float(loss), global_step=iteration)
+        summary_writer.add_scalar('train/loss_mr', float(loss_MR.detach().item()), global_step=iteration)
+        summary_writer.add_scalar('train/loss_lr', float(loss_LR.detach().item()), global_step=iteration)
+        try:
+            summary_writer.add_scalar('train/total_loss', float(total_loss.detach().item()), global_step=iteration)
+        except Exception:
+            pass
+        try:
+            summary_writer.add_scalar('train/depth_loss', float(loss_depth.detach().item()), global_step=iteration)
+        except Exception:
+            pass
+
+        # write csv row
+        try:
+            psnr_cur = float(np.mean(PSNRs)) if len(PSNRs)>0 else np.nan
+        except Exception:
+            psnr_cur = np.nan
+        # learning rate (first param group)
+        try:
+            current_lr = float(optimizer.param_groups[0]['lr'])
+        except Exception:
+            current_lr = float('nan')
+        metrics_writer.writerow([
+            iteration,
+            float(total_loss.detach().item()) if 'total_loss' in locals() else float('nan'),
+            loss,
+            float(loss_MR.detach().item()),
+            float(loss_LR.detach().item()),
+            float(loss_depth.detach().item()) if 'loss_depth' in locals() else float('nan'),
+            psnr_cur,
+            last_ssim,
+            last_lpips,
+            throughput,
+            gpu_mem_mb,
+            iter_time,
+            current_lr,
+            int(W), int(H), float(f if isinstance(f, (int,float)) else (f[0] if hasattr(f,'__len__') else 0.0))
+        ])
+        metrics_csv_file.flush()
+
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] * lr_factor
 
@@ -487,6 +566,12 @@ def reconstruction(args):
             summary_writer.add_scalar('test/psnr', np.mean(PSNRs_test), global_step=iteration)
             summary_writer.add_scalar('test/ssim', np.mean(SSIMs_test), global_step=iteration)
             summary_writer.add_scalar('test/lpips', np.mean(LPIPSs_test), global_step=iteration)
+            # cache for CSV
+            try:
+                last_ssim = float(np.mean(SSIMs_test))
+                last_lpips = float(np.mean(LPIPSs_test))
+            except Exception:
+                last_ssim, last_lpips = float('nan'), float('nan')
 
 
 
@@ -518,6 +603,49 @@ def reconstruction(args):
         
 
     tensorf.save(f'{logfolder}/{args.expname}.th')
+
+    # Plot cross-scale adaptation curves if matplotlib available
+    try:
+        if plt is not None:
+            import pandas as pd
+            df = pd.read_csv(metrics_csv_path)
+            fig, ax = plt.subplots(figsize=(8,4))
+            ax.plot(df['iter'], df['loss_hr'], label='HR loss')
+            ax.plot(df['iter'], df['loss_mr'], label='MR loss')
+            ax.plot(df['iter'], df['loss_lr'], label='LR loss')
+            ax.set_xlabel('Iteration')
+            ax.set_ylabel('Loss')
+            ax.set_title('Cross-scale geometric adaptation')
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(os.path.join(logfolder, 'cross_scale_adaptation.png'))
+            plt.close(fig)
+            # Summary table with highlight (best=green, worst=red) for selected metrics
+            metrics = ['total_loss','psnr','ssim','throughput_rays_per_s','gpu_mem_mb']
+            best_is_min = {'total_loss': True, 'psnr': False, 'ssim': False, 'throughput_rays_per_s': False, 'gpu_mem_mb': True}
+            html_rows = []
+            header = '<tr>' + ''.join(f'<th>{h}</th>' for h in ['iter']+metrics) + '</tr>'
+            for _, row in df.iterrows():
+                tds = [f"<td>{int(row['iter'])}</td>"]
+                for m in metrics:
+                    val = row.get(m, float('nan'))
+                    style = ''
+                    try:
+                        if best_is_min[m]:
+                            if val == df[m].min(): style = 'background-color:#c6efce;'
+                            if val == df[m].max(): style = 'background-color:#ffc7ce;'
+                        else:
+                            if val == df[m].max(): style = 'background-color:#c6efce;'
+                            if val == df[m].min(): style = 'background-color:#ffc7ce;'
+                    except Exception:
+                        pass
+                    tds.append(f'<td style="{style}">{val:.4f}</td>' if isinstance(val,(int,float)) else f'<td>{val}</td>')
+                html_rows.append('<tr>' + ''.join(tds) + '</tr>')
+            html = '<html><body><h3>Training Metrics Summary</h3><table border="1">' + header + ''.join(html_rows) + '</table></body></html>'
+            with open(os.path.join(logfolder, 'metrics_summary.html'), 'w', encoding='utf-8') as fhtml:
+                fhtml.write(html)
+    except Exception:
+        pass
 
 
     if args.render_train:
