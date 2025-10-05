@@ -165,6 +165,7 @@ def reconstruction(args):
     if not csv_exists:
         metrics_writer.writerow([
             'iter','total_loss','loss_hr','loss_mr','loss_lr','depth_loss','psnr','ssim','lpips',
+            'prop_hr','prop_mr','prop_lr',
             'throughput_rays_per_s','gpu_mem_mb','iter_time_s','lr','img_W','img_H','focal'
         ])
 
@@ -311,6 +312,7 @@ def reconstruction(args):
         rgb_map_LR, depth_map_LR, weight_LR, m_LR, sigma_LR, rgb_ray_LR = renderer(rays_train_all, tensorf, chunk=batch_size, N_samples=nSamples_LR, white_bg = white_bg, ndc_ray=ndc_ray, device=device, is_train=True, reso=args.down_sampling_ratio[1])
         
 
+        prop_hr = float('nan'); prop_mr = float('nan'); prop_lr = float('nan')
         if self_depth_weight > 0:
             patch_ray_idx_i, patch_mask_i = patchify(ray_idx, H, W, warping_patch_size, train_frame_len, device)
             
@@ -437,6 +439,12 @@ def reconstruction(args):
                 MR_mask = (min_idx == 1)  & (reprojection_error_MR < 0.9)
                 LR_mask = (min_idx == 0)  & (reprojection_error_LR < 0.9)
 
+            # compute cross-scale pseudo-GT proportions
+            denom = (HR_mask.numel() if hasattr(HR_mask,'numel') else 0) or 1
+            prop_hr = float(HR_mask.float().mean().item()*100.0)
+            prop_mr = float(MR_mask.float().mean().item()*100.0)
+            prop_lr = float(LR_mask.float().mean().item()*100.0)
+
             self_depth_loss = depth_l2_loss(depth_map[MR_mask], depth_map_MR[MR_mask].detach(), torch.exp(-reprojection_error_MR[MR_mask]))*self_depth_weight
             self_depth_loss = self_depth_loss + depth_l2_loss(depth_map[LR_mask], depth_map_LR[LR_mask].detach(), torch.exp(-reprojection_error_LR[LR_mask]))*self_depth_weight
             self_depth_loss = self_depth_loss + depth_l2_loss(depth_map_MR[HR_mask], depth_map[HR_mask].detach(), torch.exp(-reprojection_error[HR_mask]))*self_depth_weight  / (args.down_sampling_ratio[0]**2)
@@ -537,6 +545,7 @@ def reconstruction(args):
             psnr_cur,
             last_ssim,
             last_lpips,
+            prop_hr, prop_mr, prop_lr,
             throughput,
             gpu_mem_mb,
             iter_time,
@@ -644,6 +653,71 @@ def reconstruction(args):
             html = '<html><body><h3>Training Metrics Summary</h3><table border="1">' + header + ''.join(html_rows) + '</table></body></html>'
             with open(os.path.join(logfolder, 'metrics_summary.html'), 'w', encoding='utf-8') as fhtml:
                 fhtml.write(html)
+
+            # Paper-style summary table image with green/red highlights
+            try:
+                # pick representative rows: best/worst by selected metrics and final
+                cols = {
+                    'Total Loss': ('total_loss', True),
+                    'PSNR': ('psnr', False),
+                    'SSIM': ('ssim', False),
+                    'Throughput (tasks/s)': ('throughput_rays_per_s', False),
+                    'GPU Mem (GB)': ('gpu_mem_mb', True),
+                    'LR': ('lr', False)
+                }
+                # compute indices
+                idx_best_loss = int(df['total_loss'].idxmin()) if 'total_loss' in df else 0
+                idx_best_psnr = int(df['psnr'].idxmax()) if 'psnr' in df else 0
+                idx_last = len(df)-1
+                rows_idx = [idx_best_loss, idx_best_psnr, idx_last]
+                row_names = ['Best Loss', 'Best PSNR', 'Final']
+
+                cell_text = []
+                cell_colors = []
+                # compute best/worst per column for coloring
+                best_vals = {}
+                worst_vals = {}
+                for title,(k,is_min) in cols.items():
+                    if k not in df:
+                        continue
+                    series = df[k]
+                    best_vals[title] = series.min() if is_min else series.max()
+                    worst_vals[title] = series.max() if is_min else series.min()
+                # build table
+                for ridx in rows_idx:
+                    row = []
+                    colors = []
+                    for title,(k,is_min) in cols.items():
+                        if k in df:
+                            val = df.iloc[ridx][k]
+                            row.append(f"{val:.3f}")
+                            if val == best_vals.get(title):
+                                colors.append('#c6efce')
+                            elif val == worst_vals.get(title):
+                                colors.append('#ffc7ce')
+                            else:
+                                colors.append('white')
+                        else:
+                            row.append('-')
+                            colors.append('white')
+                    cell_text.append(row)
+                    cell_colors.append(colors)
+
+                fig2, ax2 = plt.subplots(figsize=(8, 2))
+                ax2.axis('off')
+                the_table = plt.table(cellText=cell_text,
+                                       rowLabels=row_names,
+                                       colLabels=list(cols.keys()),
+                                       cellColours=cell_colors,
+                                       loc='center')
+                the_table.auto_set_font_size(False)
+                the_table.set_fontsize(8)
+                the_table.scale(1, 1.4)
+                fig2.tight_layout()
+                fig2.savefig(os.path.join(logfolder, 'metrics_table.png'), dpi=200)
+                plt.close(fig2)
+            except Exception:
+                pass
     except Exception:
         pass
 
