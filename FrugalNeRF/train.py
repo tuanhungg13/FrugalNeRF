@@ -19,6 +19,136 @@ import datetime
 from dataLoader import dataset_dict
 import sys
 
+def create_training_report(df, logfolder):
+    """Create detailed HTML training report with metrics table"""
+    try:
+        # Calculate summary statistics
+        final_iter = df['iter'].iloc[-1]
+        final_psnr = df['psnr'].iloc[-1] if 'psnr' in df.columns else 0
+        final_loss = df['total_loss'].iloc[-1] if 'total_loss' in df.columns else 0
+        max_psnr = df['psnr'].max() if 'psnr' in df.columns else 0
+        min_loss = df['total_loss'].min() if 'total_loss' in df.columns else 0
+        
+        # Cross-scale adaptation summary
+        if 'prop_hr' in df.columns and not df['prop_hr'].isna().all():
+            avg_prop_hr = df['prop_hr'].mean()
+            avg_prop_mr = df['prop_mr'].mean()
+            avg_prop_lr = df['prop_lr'].mean()
+        else:
+            avg_prop_hr = avg_prop_mr = avg_prop_lr = 0
+        
+        # Performance metrics
+        avg_throughput = df['throughput_rays_per_s'].mean() if 'throughput_rays_per_s' in df.columns else 0
+        max_gpu_mem = df['gpu_mem_mb'].max() if 'gpu_mem_mb' in df.columns else 0
+        
+        # Create HTML report
+        html_content = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FrugalNeRF Training Report</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .header {{ background-color: #f0f0f0; padding: 20px; border-radius: 5px; }}
+        .metrics-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        .metrics-table th, .metrics-table td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        .metrics-table th {{ background-color: #f2f2f2; }}
+        .good {{ color: green; font-weight: bold; }}
+        .poor {{ color: red; font-weight: bold; }}
+        .normal {{ color: blue; }}
+        .summary {{ background-color: #e8f4f8; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+        .cross-scale {{ background-color: #f8f8e8; padding: 15px; border-radius: 5px; margin: 20px 0; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎯 FrugalNeRF Training Report</h1>
+        <p><strong>Training completed at iteration:</strong> {final_iter}</p>
+        <p><strong>Report generated:</strong> {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    </div>
+    
+    <div class="summary">
+        <h2>📊 Training Summary</h2>
+        <table class="metrics-table">
+            <tr><th>Metric</th><th>Final Value</th><th>Best Value</th><th>Status</th></tr>
+            <tr>
+                <td>PSNR (dB)</td>
+                <td>{final_psnr:.2f}</td>
+                <td>{max_psnr:.2f}</td>
+                <td class="{'good' if final_psnr > 20 else 'poor'}">{'✅ Good' if final_psnr > 20 else '❌ Poor'}</td>
+            </tr>
+            <tr>
+                <td>Total Loss</td>
+                <td>{final_loss:.6f}</td>
+                <td>{min_loss:.6f}</td>
+                <td class="{'good' if final_loss < 0.1 else 'poor'}">{'✅ Good' if final_loss < 0.1 else '❌ Poor'}</td>
+            </tr>
+            <tr>
+                <td>Average Throughput (rays/s)</td>
+                <td>{avg_throughput:.0f}</td>
+                <td>-</td>
+                <td class="{'good' if avg_throughput > 1000 else 'poor'}">{'✅ Good' if avg_throughput > 1000 else '❌ Slow'}</td>
+            </tr>
+            <tr>
+                <td>Peak GPU Memory (MB)</td>
+                <td>{max_gpu_mem:.0f}</td>
+                <td>-</td>
+                <td class="{'good' if max_gpu_mem < 8000 else 'poor'}">{'✅ Normal' if max_gpu_mem < 8000 else '⚠️ High'}</td>
+            </tr>
+        </table>
+    </div>
+    
+    <div class="cross-scale">
+        <h2>🔄 Cross-Scale Adaptation</h2>
+        <table class="metrics-table">
+            <tr><th>Resolution</th><th>Average Proportion (%)</th><th>Status</th><th>Description</th></tr>
+            <tr>
+                <td>High Resolution</td>
+                <td>{avg_prop_hr:.1f}</td>
+                <td class="{'good' if avg_prop_hr > 30 else 'poor'}">{'✅ Active' if avg_prop_hr > 30 else '❌ Low'}</td>
+                <td>Highest quality rendering</td>
+            </tr>
+            <tr>
+                <td>Mid Resolution</td>
+                <td>{avg_prop_mr:.1f}</td>
+                <td class="{'good' if avg_prop_mr > 25 else 'poor'}">{'✅ Active' if avg_prop_mr > 25 else '❌ Low'}</td>
+                <td>Balanced quality/speed</td>
+            </tr>
+            <tr>
+                <td>Low Resolution</td>
+                <td>{avg_prop_lr:.1f}</td>
+                <td class="{'good' if avg_prop_lr > 20 else 'poor'}">{'✅ Active' if avg_prop_lr > 20 else '❌ Low'}</td>
+                <td>Fastest rendering</td>
+            </tr>
+        </table>
+    </div>
+    
+    <h2>📈 Training Progress</h2>
+    <p>Detailed metrics are available in the CSV file: <code>metrics.csv</code></p>
+    <p>Cross-scale adaptation plot: <code>cross_scale_adaptation.png</code></p>
+    <p>Loss curves plot: <code>cross_scale_losses.png</code></p>
+    
+    <h2>💡 Recommendations</h2>
+    <ul>
+        <li>{"✅ Training completed successfully!" if final_psnr > 20 else "⚠️ Consider training longer or adjusting hyperparameters"}</li>
+        <li>{"✅ Cross-scale adaptation is working well" if avg_prop_hr > 30 else "⚠️ High-res proportion is low, consider adjusting self_depth_weight"}</li>
+        <li>{"✅ Good training speed" if avg_throughput > 1000 else "⚠️ Training is slow, consider reducing batch size or image resolution"}</li>
+        <li>{"✅ GPU memory usage is normal" if max_gpu_mem < 8000 else "⚠️ High GPU memory usage, consider reducing batch size"}</li>
+    </ul>
+</body>
+</html>
+        """
+        
+        # Save HTML report
+        with open(os.path.join(logfolder, 'training_report.html'), 'w', encoding='utf-8') as f:
+            f.write(html_content)
+        
+        print(f"📊 Training report saved: {os.path.join(logfolder, 'training_report.html')}")
+        
+    except Exception as e:
+        print(f"⚠️ Error creating training report: {e}")
+
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 renderer = OctreeRender_trilinear_fast
@@ -285,6 +415,22 @@ def reconstruction(args):
     pbar = tqdm(range(args.n_iters), miniters=args.progress_refresh_rate, file=sys.stdout)
     last_ssim = float('nan')
     last_lpips = float('nan')
+    
+    # Print initial training configuration
+    print("\n" + "="*80)
+    print("🚀 FRUGALNERF TRAINING STARTED")
+    print("="*80)
+    print(f"📁 Dataset: {args.dataset_name}")
+    print(f"📁 Data directory: {args.datadir}")
+    print(f"📁 Log directory: {logfolder}")
+    print(f"🔄 Total iterations: {args.n_iters}")
+    print(f"📦 Batch size: {args.batch_size}")
+    print(f"📐 Image resolution: {W}x{H}")
+    print(f"🔽 Downsample factor: {args.downsample_train}")
+    print(f"🎯 Training frames: {args.train_frame_num}")
+    print(f"🧪 Test frames: {args.test_frame_num}")
+    print("="*80)
+    print()
     for iteration in pbar:
         iter_start = time.perf_counter()
         if torch.cuda.is_available():
@@ -313,7 +459,9 @@ def reconstruction(args):
         
 
         prop_hr = float('nan'); prop_mr = float('nan'); prop_lr = float('nan')
-        if self_depth_weight > 0:
+        
+        # Always compute cross-scale proportions for visualization, even if self_depth_weight = 0
+        if True:  # Always compute proportions
             patch_ray_idx_i, patch_mask_i = patchify(ray_idx, H, W, warping_patch_size, train_frame_len, device)
             
             patch_ray_idx_j, patch_mask_j = warping(allrays_real, patch_ray_idx_i, H, W, f, depth_map[:train_items], nearest_c2w_train, frameid2_startpoints_in_allray[nearest_ids_train], patch_mask_i, warping_patch_size, device)
@@ -452,8 +600,9 @@ def reconstruction(args):
             self_depth_loss = self_depth_loss + depth_l2_loss(depth_map_LR[HR_mask], depth_map[HR_mask].detach(), torch.exp(-reprojection_error[HR_mask]))*self_depth_weight / (args.down_sampling_ratio[1]**2)
             self_depth_loss = self_depth_loss + depth_l2_loss(depth_map_LR[MR_mask], depth_map_MR[MR_mask].detach(), torch.exp(-reprojection_error_MR[MR_mask]))*self_depth_weight / (args.down_sampling_ratio[1]**2)
 
-            total_loss = total_loss + self_depth_loss
-            summary_writer.add_scalar('train/self_depth_loss', self_depth_loss.detach().item(), global_step=iteration)
+            if self_depth_weight > 0:
+                total_loss = total_loss + self_depth_loss
+                summary_writer.add_scalar('train/self_depth_loss', self_depth_loss.detach().item(), global_step=iteration)
 
         if depth_smooth_weight>0:
             depth_smooth_weight *= lr_factor
@@ -557,11 +706,50 @@ def reconstruction(args):
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] * lr_factor
 
-        # Print the current values of the losses.
+        # Print the current values of the losses and display metrics table.
         if iteration % args.progress_refresh_rate == 0:
+            # Calculate current metrics
+            current_psnr = float(np.mean(PSNRs)) if len(PSNRs) > 0 else 0.0
+            current_loss = float(loss) if 'loss' in locals() else 0.0
+            current_lr = float(optimizer.param_groups[0]['lr']) if optimizer.param_groups else 0.0
+            
+            # Display metrics table every 100 iterations
+            if iteration % (args.progress_refresh_rate * 2) == 0:
+                print("\n" + "="*80)
+                print(f"TRAINING METRICS - Iteration {iteration:05d}")
+                print("="*80)
+                print(f"{'Metric':<25} {'Current':<15} {'Status':<15} {'Notes':<25}")
+                print("-"*80)
+                print(f"{'PSNR (dB)':<25} {current_psnr:<15.2f} {'Good' if current_psnr > 20 else 'Poor':<15} {'Higher is better':<25}")
+                print(f"{'Loss':<25} {current_loss:<15.6f} {'Good' if current_loss < 0.1 else 'High':<15} {'Lower is better':<25}")
+                print(f"{'Learning Rate':<25} {current_lr:<15.6f} {'Normal':<15} {'Decaying':<25}")
+                
+                # Cross-scale proportions
+                if not (np.isnan(prop_hr) or np.isnan(prop_mr) or np.isnan(prop_lr)):
+                    print(f"{'High Res Proportion (%)':<25} {prop_hr:<15.1f} {'Active' if prop_hr > 30 else 'Low':<15} {'Cross-scale adaptation':<25}")
+                    print(f"{'Mid Res Proportion (%)':<25} {prop_mr:<15.1f} {'Active' if prop_mr > 25 else 'Low':<15} {'Cross-scale adaptation':<25}")
+                    print(f"{'Low Res Proportion (%)':<25} {prop_lr:<15.1f} {'Active' if prop_lr > 20 else 'Low':<15} {'Cross-scale adaptation':<25}")
+                
+                # Performance metrics
+                if 'throughput' in locals():
+                    print(f"{'Throughput (rays/s)':<25} {throughput:<15.0f} {'Good' if throughput > 1000 else 'Slow':<15} {'Training speed':<25}")
+                if 'gpu_mem_mb' in locals():
+                    print(f"{'GPU Memory (MB)':<25} {gpu_mem_mb:<15.0f} {'Normal' if gpu_mem_mb < 8000 else 'High':<15} {'Memory usage':<25}")
+                
+                # Test metrics if available
+                if len(PSNRs_test) > 1:
+                    print(f"{'Test PSNR (dB)':<25} {float(np.mean(PSNRs_test)):<15.2f} {'Good' if np.mean(PSNRs_test) > 20 else 'Poor':<15} {'Validation quality':<25}")
+                if len(SSIMs_test) > 1:
+                    print(f"{'Test SSIM':<25} {float(np.mean(SSIMs_test)):<15.3f} {'Good' if np.mean(SSIMs_test) > 0.8 else 'Poor':<15} {'Structural similarity':<25}")
+                if len(LPIPSs_test) > 1:
+                    print(f"{'Test LPIPS':<25} {float(np.mean(LPIPSs_test)):<15.3f} {'Good' if np.mean(LPIPSs_test) < 0.2 else 'Poor':<15} {'Perceptual distance':<25}")
+                
+                print("="*80)
+                print()
+            
             pbar.set_description(
                 f'Iteration {iteration:05d}:'
-                + f' train_psnr = {float(np.mean(PSNRs)):.2f}'
+                + f' train_psnr = {current_psnr:.2f}'
                 + f' test_psnr = {float(np.mean(PSNRs_test)):.2f}'
                 + f' test_ssim = {float(np.mean(SSIMs_test)):.2f}'
                 + f' test_lpips = {float(np.mean(LPIPSs_test)):.2f}'
@@ -612,23 +800,73 @@ def reconstruction(args):
         
 
     tensorf.save(f'{logfolder}/{args.expname}.th')
+    
+    # Print training completion summary
+    print("\n" + "="*80)
+    print("✅ FRUGALNERF TRAINING COMPLETED")
+    print("="*80)
+    print(f"📁 Model saved: {logfolder}/{args.expname}.th")
+    print(f"📊 Metrics CSV: {logfolder}/metrics.csv")
+    print(f"📈 Cross-scale plot: {logfolder}/cross_scale_adaptation.png")
+    print(f"📉 Loss curves: {logfolder}/cross_scale_losses.png")
+    print(f"📋 Training report: {logfolder}/training_report.html")
+    print("="*80)
 
     # Plot cross-scale adaptation curves if matplotlib available
     try:
         if plt is not None:
             import pandas as pd
             df = pd.read_csv(metrics_csv_path)
-            fig, ax = plt.subplots(figsize=(8,4))
-            ax.plot(df['iter'], df['loss_hr'], label='HR loss')
-            ax.plot(df['iter'], df['loss_mr'], label='MR loss')
-            ax.plot(df['iter'], df['loss_lr'], label='LR loss')
-            ax.set_xlabel('Iteration')
-            ax.set_ylabel('Loss')
-            ax.set_title('Cross-scale geometric adaptation')
-            ax.legend()
-            fig.tight_layout()
-            fig.savefig(os.path.join(logfolder, 'cross_scale_adaptation.png'))
-            plt.close(fig)
+            
+            # Plot 1: Cross-scale geometric adaptation (proportions)
+            fig1, ax1 = plt.subplots(figsize=(10,6))
+            
+            # Filter out NaN values for plotting
+            valid_mask = ~(df['prop_hr'].isna() | df['prop_mr'].isna() | df['prop_lr'].isna())
+            df_valid = df[valid_mask]
+            
+            if len(df_valid) > 0:
+                ax1.plot(df_valid['iter'], df_valid['prop_hr'], label='High res.', color='blue', linewidth=2)
+                ax1.plot(df_valid['iter'], df_valid['prop_mr'], label='Mid res.', color='orange', linewidth=2)
+                ax1.plot(df_valid['iter'], df_valid['prop_lr'], label='Low res.', color='green', linewidth=2)
+                
+                # Add smoothed versions (moving average) for better visualization
+                window_size = min(50, len(df_valid) // 10)
+                if window_size > 1:
+                    ax1.plot(df_valid['iter'], df_valid['prop_hr'].rolling(window=window_size, center=True).mean(), 
+                            color='lightblue', alpha=0.7, linewidth=1)
+                    ax1.plot(df_valid['iter'], df_valid['prop_mr'].rolling(window=window_size, center=True).mean(), 
+                            color='lightcoral', alpha=0.7, linewidth=1)
+                    ax1.plot(df_valid['iter'], df_valid['prop_lr'].rolling(window=window_size, center=True).mean(), 
+                            color='lightgreen', alpha=0.7, linewidth=1)
+            
+            ax1.set_xlabel('Training iterations')
+            ax1.set_ylabel('Proportion of serving as pseudo-GT(%)')
+            ax1.set_title('Cross-scale geometric adaptation during training')
+            ax1.legend()
+            ax1.grid(True, alpha=0.3)
+            ax1.set_ylim(0, 50)  # Set reasonable y-axis limits
+            fig1.tight_layout()
+            fig1.savefig(os.path.join(logfolder, 'cross_scale_adaptation.png'), dpi=200, bbox_inches='tight')
+            plt.close(fig1)
+            
+            # Plot 2: Loss curves
+            fig2, ax2 = plt.subplots(figsize=(8,4))
+            ax2.plot(df['iter'], df['loss_hr'], label='HR loss')
+            ax2.plot(df['iter'], df['loss_mr'], label='MR loss')
+            ax2.plot(df['iter'], df['loss_lr'], label='LR loss')
+            ax2.set_xlabel('Iteration')
+            ax2.set_ylabel('Loss')
+            ax2.set_title('Cross-scale Loss Curves')
+            ax2.legend()
+            ax2.grid(True, alpha=0.3)
+            fig2.tight_layout()
+            fig2.savefig(os.path.join(logfolder, 'cross_scale_losses.png'), dpi=200, bbox_inches='tight')
+            plt.close(fig2)
+            
+            # Create detailed HTML training report
+            create_training_report(df, logfolder)
+            
             # Summary table with highlight (best=green, worst=red) for selected metrics
             metrics = ['total_loss','psnr','ssim','throughput_rays_per_s','gpu_mem_mb']
             best_is_min = {'total_loss': True, 'psnr': False, 'ssim': False, 'throughput_rays_per_s': False, 'gpu_mem_mb': True}
