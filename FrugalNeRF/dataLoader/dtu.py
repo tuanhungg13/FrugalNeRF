@@ -255,7 +255,10 @@ def generate_sparse_depth(datadir, frame_indices, downsample=1):
             print("Aligned images.txt unavailable; falling back to COLMAP mapper (robust for 2-3 views)...")
             os.system('colmap mapper --database_path database.db --image_path images '
                      '--output_path triangulated --Mapper.num_threads 16 --Mapper.extract_colors 0 '
-                     '--Mapper.init_min_tri_angle 1 --Mapper.abs_pose_min_num_inliers 15 --Mapper.min_num_matches 15')
+                     '--Mapper.init_min_tri_angle 0.5 --Mapper.abs_pose_min_num_inliers 8 --Mapper.min_num_matches 8')
+            os.system('colmap mapper --database_path database.db --image_path images '
+                     '--output_path triangulated --Mapper.num_threads 16 --Mapper.extract_colors 0 '
+                     '--Mapper.init_min_tri_angle 0.5 --Mapper.abs_pose_min_num_inliers 8 --Mapper.min_num_matches 8')
 
             # Convert to TXT format from first model
             os.system('colmap model_converter --input_path triangulated/0 --output_path triangulated --output_type TXT')
@@ -412,8 +415,19 @@ def get_poses(images):
 def load_colmap_depth(datadir, factor=8, bd_factor=.75):
     data_file = datadir + '/colmap_depth.npy'
     
-    images = read_images_binary(datadir + '/dense/sparse/images.bin')
-    points = read_points3d_binary(datadir + '/dense/sparse/points3D.bin')
+    images_bin_path = datadir + '/dense/sparse/images.bin'
+    points3d_bin_path = datadir + '/dense/sparse/points3D.bin'
+    # Fallback: use triangulated/0 if dense/sparse missing
+    if not os.path.exists(images_bin_path) or not os.path.exists(points3d_bin_path):
+        alt_images = datadir + '/triangulated/0/images.bin'
+        alt_points = datadir + '/triangulated/0/points3D.bin'
+        if os.path.exists(alt_images) and os.path.exists(alt_points):
+            images_bin_path, points3d_bin_path = alt_images, alt_points
+        else:
+            raise FileNotFoundError(f'COLMAP depth files not found under {datadir}/dense/sparse or triangulated/0')
+
+    images = read_images_binary(images_bin_path)
+    points = read_points3d_binary(points3d_bin_path)
     Errs = np.array([point3D.error for point3D in points.values()])
     Err_mean = np.mean(Errs)
     print("Mean Projection Error:", Err_mean)
