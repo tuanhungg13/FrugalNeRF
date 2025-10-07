@@ -200,6 +200,9 @@ def generate_sparse_depth(datadir, frame_indices, downsample=1):
     os.chdir(work_dir)
     
     try:
+        # Ensure COLMAP runs headless without requiring a display server
+        if os.environ.get('QT_QPA_PLATFORM') is None:
+            os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         # Feature extraction
         print("Running COLMAP feature extraction...")
         os.system('colmap feature_extractor --database_path database.db --image_path images '

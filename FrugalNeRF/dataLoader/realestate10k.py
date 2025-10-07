@@ -227,16 +227,20 @@ def generate_sparse_depth(datadir, frame_indices, downsample=4):
     os.chdir(work_dir)
     
     try:
+        # Ensure COLMAP runs headless without requiring a display server
+        if os.environ.get('QT_QPA_PLATFORM') is None:
+            os.environ['QT_QPA_PLATFORM'] = 'offscreen'
         # Feature extraction
         print("Running COLMAP feature extraction...")
         os.system('colmap feature_extractor --database_path database.db --image_path images '
                  '--SiftExtraction.max_image_size 4032 --SiftExtraction.max_num_features 32768 '
-                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1')
+                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1 '
+                 '--SiftExtraction.use_gpu 0')
         
         # Feature matching
         print("Running COLMAP feature matching...")
         os.system('colmap exhaustive_matcher --database_path database.db '
-                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768')
+                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768 --SiftMatching.use_gpu 0')
         
         # Create images.txt for triangulation - simplified approach for RealEstate10K
         with open('created/images.txt', "w") as fid:
