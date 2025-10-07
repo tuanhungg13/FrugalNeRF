@@ -207,12 +207,13 @@ def generate_sparse_depth(datadir, frame_indices, downsample=1):
         print("Running COLMAP feature extraction...")
         os.system('colmap feature_extractor --database_path database.db --image_path images '
                  '--SiftExtraction.max_image_size 4032 --SiftExtraction.max_num_features 32768 '
-                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1')
+                 '--SiftExtraction.estimate_affine_shape 1 --SiftExtraction.domain_size_pooling 1 --ImageReader.single_camera 1 '
+                 '--SiftExtraction.use_gpu 0')
         
         # Feature matching
         print("Running COLMAP feature matching...")
         os.system('colmap exhaustive_matcher --database_path database.db '
-                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768')
+                 '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768 --SiftMatching.use_gpu 0')
         
                 # Create images.txt for triangulation - simplified approach for DTU
         with open('created/images.txt', "w") as fid:
