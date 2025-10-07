@@ -215,27 +215,54 @@ def generate_sparse_depth(datadir, frame_indices, downsample=1):
         os.system('colmap exhaustive_matcher --database_path database.db '
                  '--SiftMatching.guided_matching 1 --SiftMatching.max_num_matches 32768 --SiftMatching.use_gpu 0')
         
-                # Create images.txt for triangulation - simplified approach for DTU
-        with open('created/images.txt', "w") as fid:
-            # Use the actual copied images instead of relying on database order
-            copied_images = sorted(os.listdir('images'))
-            for idx, img_name in enumerate(copied_images):
-                # Create a simple pose entry for each image
-                fid.write(f"{idx + 1} 1.0 0.0 0.0 0.0 0.0 0.0 0.0 1 {img_name}\n\n")
-            print(f"Created images.txt with {len(copied_images)} images for DTU reconstruction")
-        
-        # Point triangulation
-        print("Running COLMAP point triangulation...")
-        os.system('colmap point_triangulator --database_path database.db --image_path images '
-                 '--input_path created --output_path triangulated '
-                 '--Mapper.tri_ignore_two_view_tracks 0 --Mapper.num_threads 16 --Mapper.init_min_tri_angle 4 --Mapper.multiple_models 0 --Mapper.extract_colors 0')
-        
-        # Convert to TXT format
-        os.system('colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
-        
-        # Image undistortion
-        print("Running COLMAP image undistortion...")
-        os.system('colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
+        # Try to create images.txt aligned with database image order (like LLFF)
+        img_rank = []
+        try:
+            db = COLMAPDatabase.connect('database.db')
+            db_images = db.execute("SELECT * FROM images")
+            img_rank = [db_image[1] for db_image in db_images]
+            db.close()
+            print(f"Found {len(img_rank)} images in database")
+        except Exception as e:
+            print(f"Error reading database: {e}")
+            img_rank = sorted(os.listdir('images'))
+
+        created_images_written = 0
+        if len(images) > 0 and len(img_rank) > 0:
+            with open('created/images.txt', "w") as fid:
+                for idx, img_name in enumerate(img_rank):
+                    base = os.path.basename(img_name)
+                    if base in images:
+                        data = [str(1 + idx)] + [' ' + item for item in images[base]] + ['\n\n']
+                        fid.writelines(data)
+                        created_images_written += 1
+            print(f"Created images.txt with {created_images_written} aligned entries for DTU reconstruction")
+
+        # Branch: if we have aligned created/images.txt entries, use point_triangulator; else fall back to mapper
+        if created_images_written > 0:
+            print("Running COLMAP point triangulation...")
+            os.system('colmap point_triangulator --database_path database.db --image_path images '
+                     '--input_path created --output_path triangulated '
+                     '--Mapper.tri_ignore_two_view_tracks 0 --Mapper.num_threads 16 --Mapper.init_min_tri_angle 4 --Mapper.multiple_models 0 --Mapper.extract_colors 0')
+
+            # Convert to TXT format
+            os.system('colmap model_converter --input_path triangulated --output_path triangulated --output_type TXT')
+
+            # Image undistortion
+            print("Running COLMAP image undistortion...")
+            os.system('colmap image_undistorter --image_path images --input_path triangulated --output_path dense')
+        else:
+            print("Aligned images.txt unavailable; falling back to COLMAP mapper (robust for 2-3 views)...")
+            os.system('colmap mapper --database_path database.db --image_path images '
+                     '--output_path triangulated --Mapper.num_threads 16 --Mapper.extract_colors 0 '
+                     '--Mapper.init_min_tri_angle 1 --Mapper.abs_pose_min_num_inliers 15 --Mapper.min_num_matches 15')
+
+            # Convert to TXT format from first model
+            os.system('colmap model_converter --input_path triangulated/0 --output_path triangulated --output_type TXT')
+            
+            # Image undistortion using reconstructed model
+            print("Running COLMAP image undistortion...")
+            os.system('colmap image_undistorter --image_path images --input_path triangulated/0 --output_path dense')
         
         print(f"Sparse depth generation completed for {n_views} views")
         
