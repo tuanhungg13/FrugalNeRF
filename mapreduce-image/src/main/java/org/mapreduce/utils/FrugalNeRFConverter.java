@@ -181,6 +181,7 @@ public class FrugalNeRFConverter {
                     if (line.startsWith("FILENAME:")) { if (curImg != null) curImg.filename = line.substring(9).trim(); continue; }
                     if (line.startsWith("WIDTH:")) { if (curImg != null) curImg.width = Integer.parseInt(line.substring(6).trim()); continue; }
                     if (line.startsWith("HEIGHT:")) { if (curImg != null) curImg.height = Integer.parseInt(line.substring(7).trim()); continue; }
+                    if (line.startsWith("IMAGE_BYTES_BASE64:")) { if (curImg != null) curImg.imageB64 = line.substring(20).trim(); continue; }
                 }
             }
             if (curImg != null) images.add(curImg);
@@ -261,22 +262,27 @@ public class FrugalNeRFConverter {
             for (int i = 0; i < scene.images.size(); i++) {
                 ProcessedImageData img = scene.images.get(i);
                 String outputPath = imagesDir + "/" + String.format("IMG_%04d.jpg", i);
-                String src = img.filename;
-                if (src == null || src.isEmpty()) {
-                    // skip if no source
-                    continue;
-                }
-                if (src.startsWith("hdfs://")) {
-                    // Copy from HDFS to local
-                    org.apache.hadoop.conf.Configuration conf = new org.apache.hadoop.conf.Configuration();
-                    org.apache.hadoop.fs.Path hdfsPath = new org.apache.hadoop.fs.Path(src);
-                    org.apache.hadoop.fs.FileSystem fs = org.apache.hadoop.fs.FileSystem.get(hdfsPath.toUri(), conf);
-                    try (java.io.InputStream in = fs.open(hdfsPath)) {
-                        Files.copy(in, Paths.get(outputPath), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-                    }
+                if (img.imageB64 != null && !img.imageB64.isEmpty()) {
+                    byte[] decoded = java.util.Base64.getDecoder().decode(img.imageB64);
+                    Files.write(Paths.get(outputPath), decoded);
                 } else {
-                    // Local/absolute path
-                    Files.copy(Paths.get(src), Paths.get(outputPath), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    String src = img.filename;
+                    if (src == null || src.isEmpty()) {
+                        // skip if no source
+                        continue;
+                    }
+                    if (src.startsWith("hdfs://")) {
+                        // Copy from HDFS to local
+                        org.apache.hadoop.conf.Configuration conf = new org.apache.hadoop.conf.Configuration();
+                        org.apache.hadoop.fs.Path hdfsPath = new org.apache.hadoop.fs.Path(src);
+                        org.apache.hadoop.fs.FileSystem fs = org.apache.hadoop.fs.FileSystem.get(hdfsPath.toUri(), conf);
+                        try (java.io.InputStream in = fs.open(hdfsPath)) {
+                            Files.copy(in, Paths.get(outputPath), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        }
+                    } else {
+                        // Local/absolute path
+                        Files.copy(Paths.get(src), Paths.get(outputPath), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    }
                 }
             }
             
@@ -538,5 +544,6 @@ public class FrugalNeRFConverter {
         int width, height;
         float[][] depthMap;
         float[][][] rays;
+        String imageB64;
     }
 }

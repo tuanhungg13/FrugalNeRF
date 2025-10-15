@@ -19,6 +19,80 @@ import datetime
 from dataLoader import dataset_dict
 import sys
 
+def _save_training_plots(hist, logfolder):
+    """Save training curves (losses, PSNR, SSIM, LPIPS) to PNG files during training."""
+    try:
+        if plt is None:
+            return
+        import numpy as np
+        import os
+        os.makedirs(logfolder, exist_ok=True)
+
+        iters = hist.get('iter', [])
+        if len(iters) == 0:
+            return
+
+        # Loss curves
+        try:
+            fig, ax = plt.subplots(figsize=(8,5))
+            if 'loss_hr' in hist and len(hist['loss_hr']):
+                ax.plot(iters, hist['loss_hr'], label='loss_hr')
+            if 'loss_mr' in hist and len(hist['loss_mr']):
+                ax.plot(iters, hist['loss_mr'], label='loss_mr')
+            if 'loss_lr' in hist and len(hist['loss_lr']):
+                ax.plot(iters, hist['loss_lr'], label='loss_lr')
+            if 'total_loss' in hist and len(hist['total_loss']):
+                ax.plot(iters, hist['total_loss'], label='total_loss', linewidth=2)
+            ax.set_title('Training Losses')
+            ax.set_xlabel('iteration')
+            ax.set_ylabel('loss')
+            ax.grid(True, alpha=0.3)
+            ax.legend()
+            fig.tight_layout()
+            fig.savefig(os.path.join(logfolder, 'loss_curves.png'))
+            plt.close(fig)
+        except Exception:
+            pass
+
+        # PSNR curve
+        try:
+            if 'psnr' in hist and len(hist['psnr']):
+                fig, ax = plt.subplots(figsize=(8,5))
+                ax.plot(iters, hist['psnr'], color='tab:blue')
+                ax.set_title('PSNR (dB)')
+                ax.set_xlabel('iteration')
+                ax.set_ylabel('psnr (dB)')
+                ax.grid(True, alpha=0.3)
+                fig.tight_layout()
+                fig.savefig(os.path.join(logfolder, 'psnr_curve.png'))
+                plt.close(fig)
+        except Exception:
+            pass
+
+        # SSIM & LPIPS curves
+        try:
+            has_ssim = 'ssim' in hist and len(hist['ssim'])
+            has_lpips = 'lpips' in hist and len(hist['lpips'])
+            if has_ssim or has_lpips:
+                fig, ax = plt.subplots(figsize=(8,5))
+                if has_ssim:
+                    ax.plot(iters, hist['ssim'], label='SSIM', color='tab:green')
+                if has_lpips:
+                    ax.plot(iters, hist['lpips'], label='LPIPS', color='tab:red')
+                ax.set_title('Validation Metrics')
+                ax.set_xlabel('iteration')
+                ax.set_ylabel('metric')
+                ax.grid(True, alpha=0.3)
+                ax.legend()
+                fig.tight_layout()
+                fig.savefig(os.path.join(logfolder, 'val_metrics.png'))
+                plt.close(fig)
+        except Exception:
+            pass
+    except Exception:
+        # Non-fatal; plotting should never break training
+        pass
+
 def create_training_report(df, logfolder):
     """Create detailed HTML training report with metrics table"""
     try:
@@ -431,6 +505,13 @@ def reconstruction(args):
     print(f"🧪 Test frames: {args.test_frame_num}")
     print("="*80)
     print()
+    # histories for on-the-fly plotting
+    hist = {
+        'iter': [],
+        'loss_hr': [], 'loss_mr': [], 'loss_lr': [], 'total_loss': [],
+        'psnr': [], 'ssim': [], 'lpips': []
+    }
+
     for iteration in pbar:
         iter_start = time.perf_counter()
         if torch.cuda.is_available():
@@ -643,8 +724,9 @@ def reconstruction(args):
 
         loss = loss.detach().item()
         
-        PSNRs.append(-10.0 * np.log(loss) / np.log(10.0))
-        summary_writer.add_scalar('train/PSNR', PSNRs[-1], global_step=iteration)
+        psnr_this = -10.0 * np.log(loss) / np.log(10.0)
+        PSNRs.append(psnr_this)
+        summary_writer.add_scalar('train/PSNR', psnr_this, global_step=iteration)
         summary_writer.add_scalar('train/mse', loss, global_step=iteration)
 
 
@@ -671,6 +753,29 @@ def reconstruction(args):
             pass
         try:
             summary_writer.add_scalar('train/depth_loss', float(loss_depth.detach().item()), global_step=iteration)
+        except Exception:
+            pass
+
+        # append histories
+        try:
+            hist['iter'].append(int(iteration))
+            hist['loss_hr'].append(float(loss))
+            hist['loss_mr'].append(float(loss_MR.detach().item()))
+            hist['loss_lr'].append(float(loss_LR.detach().item()))
+            if 'total_loss' in locals():
+                hist['total_loss'].append(float(total_loss.detach().item()))
+            else:
+                hist['total_loss'].append(float('nan'))
+            # use moving mean PSNR for smoother curve
+            hist['psnr'].append(float(np.mean(PSNRs)))
+            if len(SSIMs_test) > 1:
+                hist['ssim'].append(float(np.mean(SSIMs_test)))
+            else:
+                hist['ssim'].append(float('nan'))
+            if len(LPIPSs_test) > 1:
+                hist['lpips'].append(float(np.mean(LPIPSs_test)))
+            else:
+                hist['lpips'].append(float('nan'))
         except Exception:
             pass
 
@@ -706,54 +811,9 @@ def reconstruction(args):
         for param_group in optimizer.param_groups:
             param_group['lr'] = param_group['lr'] * lr_factor
 
-        # Print the current values of the losses and display metrics table.
+        # Periodic plotting instead of console printing
         if iteration % args.progress_refresh_rate == 0:
-            # Calculate current metrics
-            current_psnr = float(np.mean(PSNRs)) if len(PSNRs) > 0 else 0.0
-            current_loss = float(loss) if 'loss' in locals() else 0.0
-            current_lr = float(optimizer.param_groups[0]['lr']) if optimizer.param_groups else 0.0
-            
-            # Display metrics table every 100 iterations
-            if iteration % (args.progress_refresh_rate * 2) == 0:
-                print("\n" + "="*80)
-                print(f"TRAINING METRICS - Iteration {iteration:05d}")
-                print("="*80)
-                print(f"{'Metric':<25} {'Current':<15} {'Status':<15} {'Notes':<25}")
-                print("-"*80)
-                print(f"{'PSNR (dB)':<25} {current_psnr:<15.2f} {'Good' if current_psnr > 20 else 'Poor':<15} {'Higher is better':<25}")
-                print(f"{'Loss':<25} {current_loss:<15.6f} {'Good' if current_loss < 0.1 else 'High':<15} {'Lower is better':<25}")
-                print(f"{'Learning Rate':<25} {current_lr:<15.6f} {'Normal':<15} {'Decaying':<25}")
-                
-                # Cross-scale proportions
-                if not (np.isnan(prop_hr) or np.isnan(prop_mr) or np.isnan(prop_lr)):
-                    print(f"{'High Res Proportion (%)':<25} {prop_hr:<15.1f} {'Active' if prop_hr > 30 else 'Low':<15} {'Cross-scale adaptation':<25}")
-                    print(f"{'Mid Res Proportion (%)':<25} {prop_mr:<15.1f} {'Active' if prop_mr > 25 else 'Low':<15} {'Cross-scale adaptation':<25}")
-                    print(f"{'Low Res Proportion (%)':<25} {prop_lr:<15.1f} {'Active' if prop_lr > 20 else 'Low':<15} {'Cross-scale adaptation':<25}")
-                
-                # Performance metrics
-                if 'throughput' in locals():
-                    print(f"{'Throughput (rays/s)':<25} {throughput:<15.0f} {'Good' if throughput > 1000 else 'Slow':<15} {'Training speed':<25}")
-                if 'gpu_mem_mb' in locals():
-                    print(f"{'GPU Memory (MB)':<25} {gpu_mem_mb:<15.0f} {'Normal' if gpu_mem_mb < 8000 else 'High':<15} {'Memory usage':<25}")
-                
-                # Test metrics if available
-                if len(PSNRs_test) > 1:
-                    print(f"{'Test PSNR (dB)':<25} {float(np.mean(PSNRs_test)):<15.2f} {'Good' if np.mean(PSNRs_test) > 20 else 'Poor':<15} {'Validation quality':<25}")
-                if len(SSIMs_test) > 1:
-                    print(f"{'Test SSIM':<25} {float(np.mean(SSIMs_test)):<15.3f} {'Good' if np.mean(SSIMs_test) > 0.8 else 'Poor':<15} {'Structural similarity':<25}")
-                if len(LPIPSs_test) > 1:
-                    print(f"{'Test LPIPS':<25} {float(np.mean(LPIPSs_test)):<15.3f} {'Good' if np.mean(LPIPSs_test) < 0.2 else 'Poor':<15} {'Perceptual distance':<25}")
-                
-                print("="*80)
-                print()
-            
-            pbar.set_description(
-                f'Iteration {iteration:05d}:'
-                + f' train_psnr = {current_psnr:.2f}'
-                + f' test_psnr = {float(np.mean(PSNRs_test)):.2f}'
-                + f' test_ssim = {float(np.mean(SSIMs_test)):.2f}'
-                + f' test_lpips = {float(np.mean(LPIPSs_test)):.2f}'
-            )
+            _save_training_plots(hist, logfolder)
             PSNRs = []
 
 

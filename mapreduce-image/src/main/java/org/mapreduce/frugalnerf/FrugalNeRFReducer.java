@@ -20,14 +20,16 @@ public class FrugalNeRFReducer extends Reducer<Text, BytesWritable, Text, BytesW
         
         try {
             System.out.println("[Reducer:input] key=" + key.toString());
-            // Collect all processed images for this scene
+            // Collect all processed images for this scene (with dedup by filename + b64 if present)
             List<ProcessedImageData> processedImages = new ArrayList<>();
+            java.util.HashSet<String> seen = new java.util.HashSet<>();
             
             for (BytesWritable value : values) {
                 System.out.println("[Reducer:recv] valueBytes=" + value.getLength());
                 ProcessedImageData imageData = deserializeProcessedData(value.copyBytes());
                 if (imageData != null) {
-                    processedImages.add(imageData);
+                    String sig = (imageData.filename != null ? imageData.filename : "") + "|" + (imageData.imageB64 != null ? imageData.imageB64.hashCode() : 0);
+                    if (seen.add(sig)) processedImages.add(imageData);
                 }
             }
             
@@ -68,6 +70,7 @@ public class FrugalNeRFReducer extends Reducer<Text, BytesWritable, Text, BytesW
             int width = 0, height = 0;
             float[][] depthMap = null;
             float[][][] rays = null;
+            String imageB64 = null;
             
             for (String line : lines) {
                 if (line.startsWith("FILENAME:")) {
@@ -76,6 +79,8 @@ public class FrugalNeRFReducer extends Reducer<Text, BytesWritable, Text, BytesW
                     width = Integer.parseInt(line.substring(6));
                 } else if (line.startsWith("HEIGHT:")) {
                     height = Integer.parseInt(line.substring(7));
+                } else if (line.startsWith("IMAGE_BYTES_BASE64:")) {
+                    imageB64 = line.substring(20);
                 } else if (line.startsWith("DEPTH_MAP:")) {
                     depthMap = parseDepthMap(line.substring(10), width, height);
                 } else if (line.startsWith("RAYS:")) {
@@ -83,7 +88,7 @@ public class FrugalNeRFReducer extends Reducer<Text, BytesWritable, Text, BytesW
                 }
             }
             
-            return new ProcessedImageData(filename, width, height, depthMap, rays);
+            return new ProcessedImageData(filename, width, height, depthMap, rays, imageB64);
             
         } catch (Exception e) {
             System.err.println("Error deserializing data: " + e.getMessage());
@@ -432,14 +437,16 @@ public class FrugalNeRFReducer extends Reducer<Text, BytesWritable, Text, BytesW
         int width, height;
         float[][] depthMap;
         float[][][] rays;
+        String imageB64;
 
         public ProcessedImageData(String filename, int width, int height, 
-                                float[][] depthMap, float[][][] rays) {
+                                float[][] depthMap, float[][][] rays, String imageB64) {
             this.filename = filename;
             this.width = width;
             this.height = height;
             this.depthMap = depthMap;
             this.rays = rays;
+            this.imageB64 = imageB64;
         }
     }
 

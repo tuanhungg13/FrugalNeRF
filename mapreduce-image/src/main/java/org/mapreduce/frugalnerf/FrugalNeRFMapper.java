@@ -11,9 +11,11 @@ import org.mapreduce.utils.MetadataParser;
 
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+import java.util.Base64;
 import java.nio.ByteBuffer;
 import java.nio.FloatBuffer;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.List;
 
@@ -26,29 +28,47 @@ public class FrugalNeRFMapper extends Mapper<Text, BytesWritable, Text, BytesWri
     // Configuration parameters
     private static final int TARGET_W = 256;
     private static final int TARGET_H = 256;
-    private static final boolean ESTIMATE_DEPTH = true;
-    private static final boolean GENERATE_RAYS = true;
+    private static final boolean ESTIMATE_DEPTH_DEFAULT = false;
+    private static final boolean GENERATE_RAYS_DEFAULT = false;
+    private static final double BLUR_VAR_THRESH_DEFAULT = 50.0; // tune as needed
+    private static final boolean DEDUP_DEFAULT = true;
     
     private DepthEstimator depthEstimator;
     private RayGenerator rayGenerator;
     private PoseProcessor poseProcessor;
 
+    private int targetW;
+    private int targetH;
+    private boolean estimateDepth;
+    private boolean generateRays;
+    private double blurVarThreshold;
+    private boolean enableDedup;
+    private HashSet<String> seenHashes;
+
     @Override
     protected void setup(Context context) throws IOException, InterruptedException {
         super.setup(context);
         
-        // Initialize processors
-        this.depthEstimator = new DepthEstimator();
-        this.rayGenerator = new RayGenerator();
+        // Initialize processors (lazy used when enabled)
+        this.depthEstimator = null;
+        this.rayGenerator = null;
         this.poseProcessor = new PoseProcessor();
         
         // Get configuration parameters
-        int targetW = context.getConfiguration().getInt("frugalnerf.target.width", TARGET_W);
-        int targetH = context.getConfiguration().getInt("frugalnerf.target.height", TARGET_H);
-        boolean estimateDepth = context.getConfiguration().getBoolean("frugalnerf.estimate.depth", ESTIMATE_DEPTH);
-        boolean generateRays = context.getConfiguration().getBoolean("frugalnerf.generate.rays", GENERATE_RAYS);
-        
-        System.out.println("[Mapper:setup] target=" + targetW + "x" + targetH + ", estimateDepth=" + estimateDepth + ", generateRays=" + generateRays);
+        this.targetW = context.getConfiguration().getInt("frugalnerf.target.width", TARGET_W);
+        this.targetH = context.getConfiguration().getInt("frugalnerf.target.height", TARGET_H);
+        this.estimateDepth = context.getConfiguration().getBoolean("frugalnerf.estimate.depth", ESTIMATE_DEPTH_DEFAULT);
+        this.generateRays = context.getConfiguration().getBoolean("frugalnerf.generate.rays", GENERATE_RAYS_DEFAULT);
+        this.blurVarThreshold = context.getConfiguration().getFloat("frugalnerf.blur.threshold", (float) BLUR_VAR_THRESH_DEFAULT);
+        this.enableDedup = context.getConfiguration().getBoolean("frugalnerf.dedup.enable", DEDUP_DEFAULT);
+        this.seenHashes = new HashSet<>();
+
+        if (this.estimateDepth) this.depthEstimator = new DepthEstimator();
+        if (this.generateRays) this.rayGenerator = new RayGenerator();
+
+        System.out.println("[Mapper:setup] target=" + targetW + "x" + targetH + 
+                ", estimateDepth=" + estimateDepth + ", generateRays=" + generateRays +
+                ", blurVarThresh=" + blurVarThreshold + ", dedup=" + enableDedup);
         context.getCounter("SETUP", "INITIALIZED").increment(1);
     }
 
@@ -71,13 +91,33 @@ public class FrugalNeRFMapper extends Mapper<Text, BytesWritable, Text, BytesWri
             }
             System.out.println("[Mapper:image] loaded W=" + img.getWidth() + ", H=" + img.getHeight());
 
-            // Resize image
-            BufferedImage resized = ImageUtils.resize(img, TARGET_W, TARGET_H);
-            System.out.println("[Mapper:image] resized to " + TARGET_W + "x" + TARGET_H);
+            // sRGB convert, center-crop to target aspect, then resize
+            BufferedImage srgb = ImageUtils.toSRGB(img);
+            BufferedImage resized = ImageUtils.centerCropToAspect(srgb, targetW, targetH);
+            System.out.println("[Mapper:image] resized to " + targetW + "x" + targetH);
+
+            // Blur filter
+            double varLap = ImageUtils.varianceOfLaplacian(resized);
+            if (varLap < blurVarThreshold) {
+                context.getCounter("FILTER", "BLUR").increment(1);
+                System.out.println("[Mapper:filter] dropped due to blur var=" + varLap + " < " + blurVarThreshold);
+                return;
+            }
+
+            // Deduplicate by average hash
+            if (enableDedup) {
+                String ahash = ImageUtils.averageHash(resized);
+                if (seenHashes.contains(ahash)) {
+                    context.getCounter("FILTER", "DEDUP").increment(1);
+                    System.out.println("[Mapper:filter] duplicate image skipped");
+                    return;
+                }
+                seenHashes.add(ahash);
+            }
             
             // 2. Estimate depth (if enabled) - with error handling
             float[][] depthMap = null;
-            if (ESTIMATE_DEPTH) {
+            if (estimateDepth && depthEstimator != null) {
                 try {
                     depthMap = depthEstimator.estimateDepth(resized);
                     context.getCounter("PROCESSED", "DEPTH_ESTIMATED").increment(1);
@@ -90,7 +130,7 @@ public class FrugalNeRFMapper extends Mapper<Text, BytesWritable, Text, BytesWri
 
             // 3. Generate rays (if enabled) - with error handling
             float[][][] rays = null;
-            if (GENERATE_RAYS) {
+            if (generateRays && rayGenerator != null) {
                 try {
                     // Extract pose and intrinsics from filename or metadata
                     Map<String, Object> poseData = extractPoseData(filename);
@@ -114,7 +154,9 @@ public class FrugalNeRFMapper extends Mapper<Text, BytesWritable, Text, BytesWri
 
             // 5. Serialize and emit - with error handling
             try {
-                byte[] serializedData = serializeProcessedData(processedData);
+                // Encode cleaned image as JPEG bytes
+                byte[] cleanedBytes = ImageUtils.bufferedImageToBytes(resized, "jpg");
+                byte[] serializedData = serializeProcessedData(processedData, cleanedBytes);
                 String sceneKey = extractSceneId(filename);
                 System.out.println("[Mapper:emit] key=" + sceneKey + ", valueBytes=" + serializedData.length);
                 context.write(new Text(sceneKey), new BytesWritable(serializedData));
@@ -350,12 +392,16 @@ public class FrugalNeRFMapper extends Mapper<Text, BytesWritable, Text, BytesWri
     /**
      * Serialize processed data to bytes
      */
-    private byte[] serializeProcessedData(ProcessedImageData data) {
+    private byte[] serializeProcessedData(ProcessedImageData data, byte[] imageBytes) {
         // Simple serialization - in production, use more efficient format
         StringBuilder sb = new StringBuilder();
         sb.append("FILENAME:").append(data.filename).append("\n");
         sb.append("WIDTH:").append(data.width).append("\n");
         sb.append("HEIGHT:").append(data.height).append("\n");
+        if (imageBytes != null && imageBytes.length > 0) {
+            String b64 = Base64.getEncoder().encodeToString(imageBytes);
+            sb.append("IMAGE_BYTES_BASE64:").append(b64).append("\n");
+        }
         
         if (data.depthMap != null) {
             sb.append("DEPTH_MAP:");
