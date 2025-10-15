@@ -54,41 +54,81 @@ def _save_training_plots(hist, logfolder):
         except Exception:
             pass
 
-        # PSNR curve
+        # PSNR curves per resolution with styling like reference figure
         try:
-            if 'psnr' in hist and len(hist['psnr']):
-                fig, ax = plt.subplots(figsize=(8,5))
-                ax.plot(iters, hist['psnr'], color='tab:blue')
-                ax.set_title('PSNR (dB)')
-                ax.set_xlabel('iteration')
-                ax.set_ylabel('psnr (dB)')
-                ax.grid(True, alpha=0.3)
+            import numpy as np
+            iters_np = np.array(iters, dtype=float)
+            if len(iters_np) >= 2:
+                x_pct = (iters_np - iters_np.min()) / max(1e-9, (iters_np.max() - iters_np.min())) * 100.0
+
+                # derive psnr from losses when possible
+                psnr_hr = None
+                psnr_mr = None
+                psnr_lr = None
+                if 'loss_hr' in hist and len(hist['loss_hr']):
+                    psnr_hr = -10.0 * np.log10(np.maximum(1e-12, np.array(hist['loss_hr'], dtype=float)))
+                if 'loss_mr' in hist and len(hist['loss_mr']):
+                    psnr_mr = -10.0 * np.log10(np.maximum(1e-12, np.array(hist['loss_mr'], dtype=float)))
+                if 'loss_lr' in hist and len(hist['loss_lr']):
+                    psnr_lr = -10.0 * np.log10(np.maximum(1e-12, np.array(hist['loss_lr'], dtype=float)))
+
+                fig, ax = plt.subplots(figsize=(6,4))
+                # solid lines (with geo)
+                if psnr_hr is not None:
+                    ax.plot(x_pct, psnr_hr, label='High res.', color='tab:blue', linewidth=2)
+                if psnr_mr is not None:
+                    ax.plot(x_pct, psnr_mr, label='Mid res.', color='tab:orange', linewidth=2)
+                if psnr_lr is not None:
+                    ax.plot(x_pct, psnr_lr, label='Low res.', color='tab:green', linewidth=2)
+
+                # optional dashed lines if user later provides alt curves in hist (e.g., psnr_hr_wo_geo)
+                if 'psnr_hr_wo_geo' in hist and len(hist['psnr_hr_wo_geo']) == len(x_pct):
+                    ax.plot(x_pct, hist['psnr_hr_wo_geo'], label='High res. w/o geo', color='tab:blue', linestyle='--')
+                if 'psnr_mr_wo_geo' in hist and len(hist['psnr_mr_wo_geo']) == len(x_pct):
+                    ax.plot(x_pct, hist['psnr_mr_wo_geo'], label='Mid res. w/o geo', color='tab:orange', linestyle='--')
+                if 'psnr_lr_wo_geo' in hist and len(hist['psnr_lr_wo_geo']) == len(x_pct):
+                    ax.plot(x_pct, hist['psnr_lr_wo_geo'], label='Low res. w/o geo', color='tab:green', linestyle='--')
+
+                # axis and style to mimic reference
+                ax.set_xlabel('Training iterations')
+                ax.set_ylabel('PSNR')
+                ax.set_xlim(0, 100)
+                ax.set_xticks([0,20,40,60,80,100])
+                ax.grid(True, which='both', alpha=0.3)
+                ax.legend(loc='lower right', fontsize=9, ncol=2)
                 fig.tight_layout()
-                fig.savefig(os.path.join(logfolder, 'psnr_curve.png'))
+                fig.savefig(os.path.join(logfolder, 'psnr_curve.png'), dpi=200)
                 plt.close(fig)
         except Exception:
             pass
 
-        # SSIM & LPIPS curves
+        # Rendered depth error curves per resolution (mimic reference figure style)
         try:
-            has_ssim = 'ssim' in hist and len(hist['ssim'])
-            has_lpips = 'lpips' in hist and len(hist['lpips'])
-            if has_ssim or has_lpips:
-                fig, ax = plt.subplots(figsize=(8,5))
-                if has_ssim:
-                    ax.plot(iters, hist['ssim'], label='SSIM', color='tab:green')
-                if has_lpips:
-                    ax.plot(iters, hist['lpips'], label='LPIPS', color='tab:red')
-                ax.set_title('Validation Metrics')
-                ax.set_xlabel('iteration')
-                ax.set_ylabel('metric')
+            import numpy as np
+            iters_np = np.array(iters, dtype=float)
+            if len(iters_np) >= 2 and (
+                ('depth_err_hr' in hist and len(hist['depth_err_hr'])) or
+                ('depth_err_mr' in hist and len(hist['depth_err_mr'])) or
+                ('depth_err_lr' in hist and len(hist['depth_err_lr']))
+            ):
+                fig, ax = plt.subplots(figsize=(9,2.6))
+                if len(hist['depth_err_hr']):
+                    ax.plot(iters_np, hist['depth_err_hr'], label=r'$L_{geo}$-only', color='tab:blue', linewidth=2)
+                if len(hist['depth_err_mr']):
+                    ax.plot(iters_np, hist['depth_err_mr'], label=r'$L_{d}$-only', color='tab:orange', linewidth=2)
+                if len(hist['depth_err_lr']):
+                    ax.plot(iters_np, hist['depth_err_lr'], label=r'$L_{geo}+L_{d}$', color='tab:green', linewidth=2)
+                ax.set_xlabel('Iterations')
+                ax.set_ylabel('Rendered Depth Error')
                 ax.grid(True, alpha=0.3)
-                ax.legend()
+                ax.legend(loc='upper right')
                 fig.tight_layout()
-                fig.savefig(os.path.join(logfolder, 'val_metrics.png'))
+                fig.savefig(os.path.join(logfolder, 'depth_error_curve.png'), dpi=200)
                 plt.close(fig)
         except Exception:
             pass
+
+        # Skip SSIM/LPIPS plots by request
     except Exception:
         # Non-fatal; plotting should never break training
         pass
@@ -509,7 +549,8 @@ def reconstruction(args):
     hist = {
         'iter': [],
         'loss_hr': [], 'loss_mr': [], 'loss_lr': [], 'total_loss': [],
-        'psnr': [], 'ssim': [], 'lpips': []
+        'psnr': [], 'ssim': [], 'lpips': [],
+        'depth_err_hr': [], 'depth_err_mr': [], 'depth_err_lr': []
     }
 
     for iteration in pbar:
@@ -768,6 +809,43 @@ def reconstruction(args):
                 hist['total_loss'].append(float('nan'))
             # use moving mean PSNR for smoother curve
             hist['psnr'].append(float(np.mean(PSNRs)))
+            # depth error proxies (rendered depth vs. sparse/dense depth if available)
+            try:
+                if depth_train is not None:
+                    dmask = (depth_train[:train_items] > 0)
+                    if torch.any(dmask):
+                        de_hr = torch.mean(torch.abs(depth_map[:train_items][dmask] - depth_train[:train_items][dmask])).item()
+                    else:
+                        de_hr = float('nan')
+                else:
+                    de_hr = float('nan')
+            except Exception:
+                de_hr = float('nan')
+            try:
+                if depth_train is not None:
+                    dmask = (depth_train[:train_items] > 0)
+                    if torch.any(dmask):
+                        de_mr = torch.mean(torch.abs(depth_map_MR[:train_items][dmask] - depth_train[:train_items][dmask])).item()
+                    else:
+                        de_mr = float('nan')
+                else:
+                    de_mr = float('nan')
+            except Exception:
+                de_mr = float('nan')
+            try:
+                if depth_train is not None:
+                    dmask = (depth_train[:train_items] > 0)
+                    if torch.any(dmask):
+                        de_lr = torch.mean(torch.abs(depth_map_LR[:train_items][dmask] - depth_train[:train_items][dmask])).item()
+                    else:
+                        de_lr = float('nan')
+                else:
+                    de_lr = float('nan')
+            except Exception:
+                de_lr = float('nan')
+            hist['depth_err_hr'].append(de_hr)
+            hist['depth_err_mr'].append(de_mr)
+            hist['depth_err_lr'].append(de_lr)
             if len(SSIMs_test) > 1:
                 hist['ssim'].append(float(np.mean(SSIMs_test)))
             else:
