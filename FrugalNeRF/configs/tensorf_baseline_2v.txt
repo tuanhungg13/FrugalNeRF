@@ -1,61 +1,51 @@
-# TensoRF Baseline Configuration for 2 views
-# Based on original TensoRF paper without learned priors
+dataset_name = llff
+datadir = ./data/nerf_llff_data/horns
+expname =  horns_tensorf_baseline_2v
+basedir = ./log
 
-# Model configuration
-model_name=TensorVMSplit
-density_n_comp=8
-appearance_n_comp=24
-app_dim=27
-shadingMode=MLP_PE
+downsample_train = 8.0        # Giảm độ phân giải xuống 8x
+ndc_ray = 1
 
-# Training configuration
-n_iters=30000
-batch_size=4096
-lr_init=0.02
-lr_basis=1e-3
-lr_decay_iters=-1
-lr_decay_target_ratio=0.1
-lr_upsample_reset=1
+n_iters = 2000                # Giảm số iterations
+batch_size = 256              # Giảm batch size xuống 256
+novel_batch_size = 128        # Giảm novel batch size
 
-# Loss configuration
-L1_weight=1.0
-TV_weight=0.1
-TV_dense=0.01
-TV_early=0.01
-TV_after=0.01
-TV_add=0.01
+N_voxel_init = 262144 # 64**3
+N_voxel_final = 262144000 # 640**3
+down_sampling_ratio = [4,16]
 
-# Rendering configuration
-N_samples=64
-N_rand=1024
-lindisp=False
-perturb=1.0
-raw_noise_std=1.0
-white_bg=False
-ndc_ray=False
-step_ratio=2.0
+upsamp_list = [500, 1000, 1500, 2000, 2500, 3000]
+update_AlphaMask_list = [1000,2000]
 
-# Depth configuration
-with_depth=False
-depth_loss_weight=0.1
-depth_smooth_weight=0.1
+N_vis = -1 # vis all testing images
+vis_every = 20000
 
-# Multi-resolution configuration
-down_sampling_ratio=[4,16]
-upsampling_list=[2000, 3000, 4000, 5500, 7000]
-update_AlphaMask_list=[2000, 4000]
+render_train = 0
+render_test = 1
+render_path = 0
 
-# Regularization
-density_shift=-10
-alphaMask_thres=0.001
-distance_scale=25
-rayMarch_weight_thres=0.0001
+n_lamb_sigma = [16,4,4]
+n_lamb_sh = [48,12,12]
 
-# Positional encoding
-pos_pe=6
-view_pe=6
-fea_pe=6
-featureC=128
+shadingMode = MLP_No_View
+fea2denseAct = relu
 
-# Activation
-fea2denseAct=softplus
+view_pe = 0
+fea_pe = 0
+
+MR_color_weight = 10
+LR_color_weight = 10
+
+TV_weight_density = 0.0       # TensoRF baseline không dùng TV loss
+TV_weight_app = 0.0
+TV_weight_color_density = 0.0
+
+Sparse_Depth_weight = 0.0     # TensoRF baseline không dùng depth
+Self_Depth_weight = 0.0
+Dist_weight = 0.0
+Depth_Smooth_weight = 0.0
+Dense_Depth_weight = 0.0
+
+lr_init = 0.08
+lr_basis = 4e-3
+lr_decay_target_ratio = 0.025

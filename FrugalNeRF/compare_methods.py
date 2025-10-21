@@ -69,7 +69,7 @@ def run_training(config_path, model_name, dataset_path, output_dir, train_frames
             "training_time": training_time
         }
 
-def evaluate_model(model_output_dir, model_name, dataset_path, test_frames):
+def evaluate_model(model_output_dir, model_name, dataset_path, test_frames, config_path):
     """
     Đánh giá model đã train
     """
@@ -92,10 +92,10 @@ def evaluate_model(model_output_dir, model_name, dataset_path, test_frames):
     
     print(f"Using checkpoint: {ckpt_path}")
     
-    # Chạy evaluation
+    # Chạy evaluation với config tương ứng
     cmd = [
         "python", "train.py",
-        "--config", "configs/llff_default_2v.txt",  # Sử dụng config mặc định
+        "--config", config_path,  # Sử dụng config tương ứng với model
         "--datadir", dataset_path,
         "--ckpt", ckpt_path,
         "--render_only", "1",
@@ -108,6 +108,11 @@ def evaluate_model(model_output_dir, model_name, dataset_path, test_frames):
         if result.returncode == 0:
             # Parse metrics từ output
             metrics = parse_metrics(result.stdout)
+            
+            # Nếu không parse được từ output, thử đọc từ file
+            if not metrics:
+                metrics = read_metrics_from_file(ckpt_dir)
+            
             print(f"✅ {model_name} evaluation completed")
             print(f"PSNR: {metrics.get('psnr', 'N/A')}")
             print(f"SSIM: {metrics.get('ssim', 'N/A')}")
@@ -128,25 +133,82 @@ def parse_metrics(output_text):
     metrics = {}
     lines = output_text.split('\n')
     
+    print(f"🔍 Parsing metrics from output...")
+    print(f"Output preview: {output_text[:500]}...")
+    
     for line in lines:
-        if 'PSNR' in line and ':' in line:
+        line = line.strip()
+        # Tìm PSNR với nhiều format khác nhau
+        if 'PSNR' in line:
             try:
-                psnr = float(line.split(':')[-1].strip())
-                metrics['psnr'] = psnr
-            except:
-                pass
-        elif 'SSIM' in line and ':' in line:
+                # Format: "PSNR: 25.3" hoặc "PSNR = 25.3" hoặc "PSNR 25.3"
+                import re
+                psnr_match = re.search(r'PSNR[:\s=]+(\d+\.?\d*)', line)
+                if psnr_match:
+                    psnr = float(psnr_match.group(1))
+                    metrics['psnr'] = psnr
+                    print(f"Found PSNR: {psnr}")
+            except Exception as e:
+                print(f"Error parsing PSNR: {e}")
+                
+        # Tìm SSIM
+        elif 'SSIM' in line:
             try:
-                ssim = float(line.split(':')[-1].strip())
-                metrics['ssim'] = ssim
-            except:
-                pass
-        elif 'LPIPS' in line and ':' in line:
+                import re
+                ssim_match = re.search(r'SSIM[:\s=]+(\d+\.?\d*)', line)
+                if ssim_match:
+                    ssim = float(ssim_match.group(1))
+                    metrics['ssim'] = ssim
+                    print(f"Found SSIM: {ssim}")
+            except Exception as e:
+                print(f"Error parsing SSIM: {e}")
+                
+        # Tìm LPIPS
+        elif 'LPIPS' in line:
             try:
-                lpips = float(line.split(':')[-1].strip())
-                metrics['lpips'] = lpips
-            except:
-                pass
+                import re
+                lpips_match = re.search(r'LPIPS[:\s=]+(\d+\.?\d*)', line)
+                if lpips_match:
+                    lpips = float(lpips_match.group(1))
+                    metrics['lpips'] = lpips
+                    print(f"Found LPIPS: {lpips}")
+            except Exception as e:
+                print(f"Error parsing LPIPS: {e}")
+    
+    print(f"Final metrics: {metrics}")
+    return metrics
+
+def read_metrics_from_file(ckpt_dir):
+    """
+    Đọc metrics từ file trong checkpoint directory
+    """
+    metrics = {}
+    
+    # Tìm file metrics có thể có
+    possible_files = [
+        'metrics.json',
+        'results.json', 
+        'evaluation.json',
+        'test_results.json'
+    ]
+    
+    for filename in possible_files:
+        filepath = os.path.join(ckpt_dir, filename)
+        if os.path.exists(filepath):
+            try:
+                import json
+                with open(filepath, 'r') as f:
+                    data = json.load(f)
+                    if 'psnr' in data:
+                        metrics['psnr'] = data['psnr']
+                    if 'ssim' in data:
+                        metrics['ssim'] = data['ssim']
+                    if 'lpips' in data:
+                        metrics['lpips'] = data['lpips']
+                print(f"✅ Read metrics from {filename}")
+                break
+            except Exception as e:
+                print(f"Error reading {filename}: {e}")
     
     return metrics
 
@@ -222,8 +284,8 @@ def main():
     # Định nghĩa config cho từng model (sử dụng config RAM thấp)
     model_configs = {
         'FrugalNeRF': 'configs/llff_ultra_low_ram_2v.txt',
-        'TensoRF': 'configs/tensorf_baseline_2v.txt',  # Cần tạo config này
-        'SparseNeRF': 'configs/sparsenerf_2v.txt'      # Cần tạo config này
+        'TensoRF': 'configs/tensorf_baseline_2v.txt',
+        'SparseNeRF': 'configs/sparsenerf_2v.txt'
     }
     
     # Chạy training và evaluation cho từng model
@@ -249,14 +311,20 @@ def main():
         
         # Evaluation (chỉ nếu training thành công)
         if result['status'] == 'success':
+            print(f"\n🔍 Starting evaluation for {model_name}...")
             metrics = evaluate_model(
                 model_output_dir=result['output_dir'],
                 model_name=model_name,
                 dataset_path=args.dataset,
-                test_frames=args.test_frames
+                test_frames=args.test_frames,
+                config_path=config_path  # Truyền config path
             )
             if metrics:
                 result['metrics'] = metrics
+                print(f"✅ Metrics found for {model_name}: {metrics}")
+            else:
+                print(f"⚠️  No metrics found for {model_name}")
+                result['metrics'] = {'psnr': 'N/A', 'ssim': 'N/A', 'lpips': 'N/A'}
         
         results.append(result)
     
