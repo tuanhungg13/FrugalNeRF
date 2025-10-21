@@ -138,12 +138,12 @@ def parse_metrics(output_text):
     
     for line in lines:
         line = line.strip()
-        # Tìm PSNR với nhiều format khác nhau
-        if 'PSNR' in line:
+        # Tìm PSNR với format từ train.py: "======> {expname} test all psnr: {value} <========"
+        if 'psnr:' in line.lower():
             try:
-                # Format: "PSNR: 25.3" hoặc "PSNR = 25.3" hoặc "PSNR 25.3"
                 import re
-                psnr_match = re.search(r'PSNR[:\s=]+(\d+\.?\d*)', line)
+                # Format: "======> expname test all psnr: 25.3 <========"
+                psnr_match = re.search(r'psnr:\s*(\d+\.?\d*)', line, re.IGNORECASE)
                 if psnr_match:
                     psnr = float(psnr_match.group(1))
                     metrics['psnr'] = psnr
@@ -152,10 +152,10 @@ def parse_metrics(output_text):
                 print(f"Error parsing PSNR: {e}")
                 
         # Tìm SSIM
-        elif 'SSIM' in line:
+        elif 'ssim:' in line.lower():
             try:
                 import re
-                ssim_match = re.search(r'SSIM[:\s=]+(\d+\.?\d*)', line)
+                ssim_match = re.search(r'ssim:\s*(\d+\.?\d*)', line, re.IGNORECASE)
                 if ssim_match:
                     ssim = float(ssim_match.group(1))
                     metrics['ssim'] = ssim
@@ -164,10 +164,10 @@ def parse_metrics(output_text):
                 print(f"Error parsing SSIM: {e}")
                 
         # Tìm LPIPS
-        elif 'LPIPS' in line:
+        elif 'lpips:' in line.lower():
             try:
                 import re
-                lpips_match = re.search(r'LPIPS[:\s=]+(\d+\.?\d*)', line)
+                lpips_match = re.search(r'lpips:\s*(\d+\.?\d*)', line, re.IGNORECASE)
                 if lpips_match:
                     lpips = float(lpips_match.group(1))
                     metrics['lpips'] = lpips
