@@ -219,9 +219,9 @@ def main():
     
     results = []
     
-    # Định nghĩa config cho từng model
+    # Định nghĩa config cho từng model (sử dụng config RAM thấp)
     model_configs = {
-        'FrugalNeRF': 'configs/llff_default_2v.txt',
+        'FrugalNeRF': 'configs/llff_ultra_low_ram_2v.txt',
         'TensoRF': 'configs/tensorf_baseline_2v.txt',  # Cần tạo config này
         'SparseNeRF': 'configs/sparsenerf_2v.txt'      # Cần tạo config này
     }
